@@ -1,0 +1,44 @@
+{
+  "name": "agentmesh",
+  "version": "0.0.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "agentmesh": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "cli": "tsx src/cli.ts",
+    "db:generate": "drizzle-kit generate",
+    "lint": "oxlint src test scripts *.ts",
+    "smoke:compose": "tsx scripts/compose-smoke.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/fastify": "2.0.0",
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "drizzle-orm": "0.45.2",
+    "fastify": "5.12.1",
+    "pg": "8.23.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@types/node": "26.4.0",
+    "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.10",
+    "oxlint": "1.80.0",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}

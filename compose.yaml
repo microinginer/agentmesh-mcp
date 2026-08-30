@@ -1,0 +1,46 @@
+name: agentmesh
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: agentmesh
+      POSTGRES_USER: agentmesh
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentmesh-local-only}
+    volumes:
+      - agentmesh-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentmesh -d agentmesh"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  agentmesh:
+    build:
+      context: .
+    environment:
+      DATABASE_URL: postgres://agentmesh:${POSTGRES_PASSWORD:-agentmesh-local-only}@postgres:5432/agentmesh
+      AGENT_SESSION_SIGNING_KEY: ${AGENT_SESSION_SIGNING_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA}
+      HOST: 0.0.0.0
+      PORT: 3000
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+    ports:
+      - 127.0.0.1:${AGENTMESH_PORT:-3000}:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  agentmesh-postgres:

@@ -1,5 +1,10 @@
 # AgentMesh Alpha Design
 
+> **Implementation note:** This document remains the hardening target for a
+> closed hosted alpha. The first working milestone is intentionally smaller
+> and is defined in
+> `docs/superpowers/specs/2026-08-30-agentmesh-mvp-design.md`.
+
 **Status:** Approved for implementation after final architecture review
 
 **Date:** 2026-08-30
