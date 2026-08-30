@@ -2,15 +2,18 @@ import type { Pool } from "pg";
 
 export const OBSERVER_ROLE_NAME = "agentmesh_observer";
 
-const roleNamePattern = /^[a-z][a-z0-9_]{0,62}$/;
+const testRoleNamePattern = /^agentmesh_observer_test_[a-z0-9_]+$/;
 
 export async function ensureObserverRole(
   pool: Pool,
   password: string,
   roleName = OBSERVER_ROLE_NAME,
 ): Promise<void> {
-  if (!roleNamePattern.test(roleName)) {
-    throw new Error("Observer role name is invalid");
+  if (
+    roleName.length > 63 ||
+    (roleName !== OBSERVER_ROLE_NAME && !testRoleNamePattern.test(roleName))
+  ) {
+    throw new Error("Observer role name is not allowed");
   }
 
   const client = await pool.connect();
@@ -19,6 +22,71 @@ export async function ensureObserverRole(
     await client.query(
       "SELECT pg_advisory_xact_lock(hashtextextended('agentmesh observer role provisioning', 0))",
     );
+    const preflight = await client.query<{
+      provisioner_allowed: boolean;
+      target_owns_objects: boolean;
+      conflicting_login_count: string;
+    }>(
+      `WITH database_info AS (
+         SELECT database.oid, database.datdba
+           FROM pg_database database
+          WHERE database.datname = current_database()
+       ),
+       current_principal AS (
+         SELECT role.oid, role.rolsuper
+           FROM pg_roles role
+          WHERE role.rolname = current_user
+       ),
+       target_principal AS (
+         SELECT role.oid
+           FROM pg_roles role
+          WHERE role.rolname = $1
+       )
+       SELECT (
+                current_principal.rolsuper
+                OR current_principal.oid = database_info.datdba
+              ) AS provisioner_allowed,
+              EXISTS (
+                SELECT 1
+                  FROM pg_shdepend dependency
+                  JOIN target_principal target
+                    ON dependency.refclassid = 'pg_authid'::regclass
+                   AND dependency.refobjid = target.oid
+                 WHERE dependency.deptype = 'o'
+              ) AS target_owns_objects,
+              (
+                SELECT count(*)::text
+                  FROM pg_roles candidate
+                 WHERE candidate.rolcanlogin
+                   AND candidate.oid <> database_info.datdba
+                   AND candidate.oid <> current_principal.oid
+                   AND candidate.oid <> COALESCE(
+                     (SELECT target.oid FROM target_principal target),
+                     0
+                   )
+                   AND has_database_privilege(
+                     candidate.oid,
+                     database_info.oid,
+                     'CONNECT'
+                   )
+              ) AS conflicting_login_count
+         FROM database_info
+         CROSS JOIN current_principal`,
+      [roleName],
+    );
+    const preflightResult = preflight.rows[0];
+    if (
+      preflightResult === undefined ||
+      !preflightResult.provisioner_allowed ||
+      preflightResult.conflicting_login_count !== "0"
+    ) {
+      throw new Error(
+        "Observer provisioning requires a dedicated AgentMesh database",
+      );
+    }
+    if (preflightResult.target_owns_objects) {
+      throw new Error("Observer role must not own database objects");
+    }
     await client.query(
       "SELECT set_config('agentmesh.observer_password', $1, true) IS NOT NULL",
       [password],
@@ -74,23 +142,24 @@ export async function ensureObserverRole(
         REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC;
         REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM PUBLIC;
         REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
-        REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+        REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public FROM PUBLIC;
         REVOKE ALL PRIVILEGES ON SCHEMA drizzle FROM PUBLIC;
         REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA drizzle FROM PUBLIC;
         REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA drizzle FROM PUBLIC;
-        REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA drizzle FROM PUBLIC;
+        REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA drizzle FROM PUBLIC;
         REVOKE ALL PRIVILEGES ON SCHEMA observer FROM PUBLIC;
         REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA observer FROM PUBLIC;
+        REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA observer FROM PUBLIC;
         ALTER DEFAULT PRIVILEGES IN SCHEMA public
           REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC;
         ALTER DEFAULT PRIVILEGES IN SCHEMA public
           REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC;
         ALTER DEFAULT PRIVILEGES IN SCHEMA public
-          REVOKE ALL PRIVILEGES ON FUNCTIONS FROM PUBLIC;
+          REVOKE ALL PRIVILEGES ON ROUTINES FROM PUBLIC;
         ALTER DEFAULT PRIVILEGES IN SCHEMA observer
           REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC;
         ALTER DEFAULT PRIVILEGES IN SCHEMA observer
-          REVOKE ALL PRIVILEGES ON FUNCTIONS FROM PUBLIC;
+          REVOKE ALL PRIVILEGES ON ROUTINES FROM PUBLIC;
 
         EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA public FROM %I', '${roleName}');
         EXECUTE format(
@@ -102,7 +171,7 @@ export async function ensureObserverRole(
           '${roleName}'
         );
         EXECUTE format(
-          'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM %I',
+          'REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public FROM %I',
           '${roleName}'
         );
         EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA drizzle FROM %I', '${roleName}');
@@ -115,12 +184,16 @@ export async function ensureObserverRole(
           '${roleName}'
         );
         EXECUTE format(
-          'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA drizzle FROM %I',
+          'REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA drizzle FROM %I',
           '${roleName}'
         );
         EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA observer FROM %I', '${roleName}');
         EXECUTE format(
           'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA observer FROM %I',
+          '${roleName}'
+        );
+        EXECUTE format(
+          'REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA observer FROM %I',
           '${roleName}'
         );
         EXECUTE format('GRANT USAGE ON SCHEMA observer TO %I', '${roleName}');

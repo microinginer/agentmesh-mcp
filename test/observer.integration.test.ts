@@ -12,7 +12,12 @@ const databaseUrl =
   "postgres://agentmesh:agentmesh@127.0.0.1:55432/agentmesh_test";
 const parsedDatabaseUrl = new URL(databaseUrl);
 const testRolePattern = /^agentmesh_observer_test_[a-z0-9_]+$/;
-const roleName = `agentmesh_observer_test_${randomBytes(8).toString("hex")}`;
+const testSuffix = randomBytes(8).toString("hex");
+const roleName = `agentmesh_observer_test_${testSuffix}`;
+const unrelatedRoleName = `agentmesh_unrelated_test_${testSuffix}`;
+const ownedSchemaName = `observer_owned_test_${testSuffix}`;
+const observerFunctionName = `observer_test_function_${testSuffix}`;
+const observerProcedureName = `observer_test_procedure_${testSuffix}`;
 const firstPassword = `first-'-%-\\-${randomBytes(24).toString("base64url")}`;
 const observerPassword = `second-'-%-\\-${randomBytes(24).toString("base64url")}`;
 
@@ -58,6 +63,23 @@ beforeAll(async () => {
   await database.pool.query(
     `GRANT SELECT ON ALL TABLES IN SCHEMA drizzle TO ${roleName}`,
   );
+  await database.pool.query(`
+    CREATE FUNCTION observer.${observerFunctionName}()
+    RETURNS text
+    LANGUAGE sql
+    AS $$ SELECT 'unsafe'::text $$
+  `);
+  await database.pool.query(`
+    CREATE PROCEDURE observer.${observerProcedureName}()
+    LANGUAGE plpgsql
+    AS $$ BEGIN NULL; END $$
+  `);
+  await database.pool.query(
+    `GRANT EXECUTE ON FUNCTION observer.${observerFunctionName}() TO PUBLIC, ${roleName}`,
+  );
+  await database.pool.query(
+    `GRANT EXECUTE ON PROCEDURE observer.${observerProcedureName}() TO PUBLIC, ${roleName}`,
+  );
   await ensureObserverRole(database.pool, observerPassword, roleName);
 });
 
@@ -73,6 +95,12 @@ afterAll(async () => {
       [roleName],
     );
     expect(active.rows[0]?.count).toBe("0");
+    await database.pool.query(
+      `DROP FUNCTION IF EXISTS observer.${observerFunctionName}()`,
+    );
+    await database.pool.query(
+      `DROP PROCEDURE IF EXISTS observer.${observerProcedureName}()`,
+    );
     await database.pool.query(`DROP OWNED BY ${roleName}`);
     await database.pool.query(`DROP ROLE ${roleName}`);
   }
@@ -80,6 +108,29 @@ afterAll(async () => {
 });
 
 describe("pgAdmin observer database boundary", () => {
+  it("rejects every role override except the production role or a unique test role before connecting", async () => {
+    for (const invalidRoleName of [
+      "agentmesh",
+      "postgres",
+      "generic_valid_role",
+      "agentmesh_observer_test_",
+      `agentmesh_observer_test_${"a".repeat(64)}`,
+    ]) {
+      let connectCalls = 0;
+      const fakePool = {
+        connect: async () => {
+          connectCalls += 1;
+          throw new Error("pool connect must not run");
+        },
+      } as unknown as Pool;
+
+      await expect(
+        ensureObserverRole(fakePool, observerPassword, invalidRoleName),
+      ).rejects.toThrow("Observer role name is not allowed");
+      expect(connectCalls).toBe(0);
+    }
+  });
+
   it("exposes exactly four views with only the approved columns", async () => {
     const views = await database.pool.query<{ table_name: string }>(
       `SELECT table_name
@@ -295,6 +346,213 @@ describe("pgAdmin observer database boundary", () => {
       client.release();
       await connection.end();
     }
+  });
+
+  it("revokes stale function and procedure execution in the observer schema", async () => {
+    const connection = observerPool();
+    const client = await connection.connect();
+    try {
+      await expectSqlState(
+        client,
+        `SELECT observer.${observerFunctionName}()`,
+      );
+      await expectSqlState(
+        client,
+        `CALL observer.${observerProcedureName}()`,
+      );
+    } finally {
+      client.release();
+      await connection.end();
+    }
+  });
+
+  it("rejects an existing observer that owns an object before changing the role", async () => {
+    const attemptedPassword = `owned-'-%-\\-${randomBytes(24).toString("base64url")}`;
+    let rejected: unknown;
+    let beforeRows: Record<string, unknown>[] = [];
+    let afterRows: Record<string, unknown>[] = [];
+    try {
+      await database.pool.query(
+        `CREATE SCHEMA ${ownedSchemaName} AUTHORIZATION ${roleName}`,
+      );
+      const before = await database.pool.query(
+        `SELECT role.rolpassword, role.rolcanlogin, role.rolsuper, role.rolcreatedb,
+                role.rolcreaterole, role.rolinherit, role.rolreplication,
+                role.rolbypassrls,
+                COALESCE((
+                  SELECT jsonb_agg(
+                    jsonb_build_object('database', setting.setdatabase, 'config', setting.setconfig)
+                    ORDER BY setting.setdatabase
+                  )
+                    FROM pg_db_role_setting setting
+                   WHERE setting.setrole = role.oid
+                ), '[]'::jsonb) AS role_settings
+           FROM pg_authid role
+          WHERE role.rolname = $1`,
+        [roleName],
+      );
+      beforeRows = before.rows;
+      try {
+        await ensureObserverRole(database.pool, attemptedPassword, roleName);
+      } catch (error) {
+        rejected = error;
+      }
+      const after = await database.pool.query(
+        `SELECT role.rolpassword, role.rolcanlogin, role.rolsuper, role.rolcreatedb,
+                role.rolcreaterole, role.rolinherit, role.rolreplication,
+                role.rolbypassrls,
+                COALESCE((
+                  SELECT jsonb_agg(
+                    jsonb_build_object('database', setting.setdatabase, 'config', setting.setconfig)
+                    ORDER BY setting.setdatabase
+                  )
+                    FROM pg_db_role_setting setting
+                   WHERE setting.setrole = role.oid
+                ), '[]'::jsonb) AS role_settings
+           FROM pg_authid role
+          WHERE role.rolname = $1`,
+        [roleName],
+      );
+      afterRows = after.rows;
+    } finally {
+      const active = await database.pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM pg_stat_activity WHERE usename = $1 AND pid <> pg_backend_pid()",
+        [roleName],
+      );
+      expect(active.rows).toEqual([{ count: "0" }]);
+      await database.pool.query(`ALTER SCHEMA ${ownedSchemaName} OWNER TO CURRENT_USER`);
+      await database.pool.query(`DROP SCHEMA ${ownedSchemaName}`);
+    }
+
+    expect(rejected).toMatchObject({
+      message: "Observer role must not own database objects",
+    });
+    expect(String(rejected)).not.toContain(roleName);
+    expect(String(rejected)).not.toContain(attemptedPassword);
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it("rejects a database usable by an unrelated login without mutating role or PUBLIC ACLs", async () => {
+    const attemptedPassword = `preflight-'-%-\\-${randomBytes(24).toString("base64url")}`;
+    const originalPublicConnect = await database.pool.query<{ allowed: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_database database
+           CROSS JOIN LATERAL aclexplode(
+             COALESCE(database.datacl, acldefault('d', database.datdba))
+           ) privilege
+          WHERE database.datname = current_database()
+            AND privilege.grantee = 0
+            AND privilege.privilege_type = 'CONNECT'
+       ) AS allowed`,
+    );
+
+    let rejected: unknown;
+    let beforeRoleRows: Record<string, unknown>[] = [];
+    let afterRoleRows: Record<string, unknown>[] = [];
+    let beforeAclRows: Array<{ datacl: string | null }> = [];
+    let afterAclRows: Array<{ datacl: string | null }> = [];
+    try {
+      await database.pool.query(`CREATE ROLE ${unrelatedRoleName} LOGIN`);
+      await database.pool.query(
+        `GRANT CONNECT ON DATABASE agentmesh_test TO PUBLIC`,
+      );
+      const beforeRole = await database.pool.query(
+        `SELECT role.rolpassword, role.rolcanlogin, role.rolsuper, role.rolcreatedb,
+                role.rolcreaterole, role.rolinherit, role.rolreplication,
+                role.rolbypassrls,
+                COALESCE((
+                  SELECT jsonb_agg(
+                    jsonb_build_object('database', setting.setdatabase, 'config', setting.setconfig)
+                    ORDER BY setting.setdatabase
+                  )
+                    FROM pg_db_role_setting setting
+                   WHERE setting.setrole = role.oid
+                ), '[]'::jsonb) AS role_settings
+           FROM pg_authid role
+          WHERE role.rolname = $1`,
+        [roleName],
+      );
+      beforeRoleRows = beforeRole.rows;
+      const beforeAcl = await database.pool.query<{ datacl: string | null }>(
+        "SELECT datacl::text AS datacl FROM pg_database WHERE datname = current_database()",
+      );
+      beforeAclRows = beforeAcl.rows;
+      const unrelatedAccess = await database.pool.query<{
+        can_connect: boolean;
+        has_direct_connect: boolean;
+      }>(
+        `SELECT has_database_privilege($1, current_database(), 'CONNECT') AS can_connect,
+                EXISTS (
+                  SELECT 1
+                    FROM pg_database database
+                    CROSS JOIN LATERAL aclexplode(
+                      COALESCE(database.datacl, acldefault('d', database.datdba))
+                    ) privilege
+                   WHERE database.datname = current_database()
+                     AND privilege.grantee = (SELECT oid FROM pg_roles WHERE rolname = $1)
+                     AND privilege.privilege_type = 'CONNECT'
+                ) AS has_direct_connect`,
+        [unrelatedRoleName],
+      );
+      expect(unrelatedAccess.rows).toEqual([
+        { can_connect: true, has_direct_connect: false },
+      ]);
+
+      try {
+        await ensureObserverRole(database.pool, attemptedPassword, roleName);
+      } catch (error) {
+        rejected = error;
+      }
+      const afterRole = await database.pool.query(
+        `SELECT role.rolpassword, role.rolcanlogin, role.rolsuper, role.rolcreatedb,
+                role.rolcreaterole, role.rolinherit, role.rolreplication,
+                role.rolbypassrls,
+                COALESCE((
+                  SELECT jsonb_agg(
+                    jsonb_build_object('database', setting.setdatabase, 'config', setting.setconfig)
+                    ORDER BY setting.setdatabase
+                  )
+                    FROM pg_db_role_setting setting
+                   WHERE setting.setrole = role.oid
+                ), '[]'::jsonb) AS role_settings
+           FROM pg_authid role
+          WHERE role.rolname = $1`,
+        [roleName],
+      );
+      afterRoleRows = afterRole.rows;
+      const afterAcl = await database.pool.query<{ datacl: string | null }>(
+        "SELECT datacl::text AS datacl FROM pg_database WHERE datname = current_database()",
+      );
+      afterAclRows = afterAcl.rows;
+    } finally {
+      const active = await database.pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM pg_stat_activity WHERE usename = $1 AND pid <> pg_backend_pid()",
+        [unrelatedRoleName],
+      );
+      expect(active.rows).toEqual([{ count: "0" }]);
+      await database.pool.query(`DROP OWNED BY ${unrelatedRoleName}`);
+      await database.pool.query(`DROP ROLE ${unrelatedRoleName}`);
+      if (originalPublicConnect.rows[0]?.allowed === true) {
+        await database.pool.query(
+          "GRANT CONNECT ON DATABASE agentmesh_test TO PUBLIC",
+        );
+      } else {
+        await database.pool.query(
+          "REVOKE CONNECT ON DATABASE agentmesh_test FROM PUBLIC",
+        );
+      }
+      await ensureObserverRole(database.pool, observerPassword, roleName);
+    }
+
+    expect(rejected).toMatchObject({
+      message: "Observer provisioning requires a dedicated AgentMesh database",
+    });
+    expect(String(rejected)).not.toContain(roleName);
+    expect(String(rejected)).not.toContain(unrelatedRoleName);
+    expect(String(rejected)).not.toContain(attemptedPassword);
+    expect(afterRoleRows).toEqual(beforeRoleRows);
+    expect(afterAclRows).toEqual(beforeAclRows);
   });
 
   it("cannot mutate, create, truncate, execute application functions, or assume a role", async () => {
