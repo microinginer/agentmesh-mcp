@@ -1,9 +1,12 @@
 import { sql } from "drizzle-orm";
+import type { ActivityMetadata } from "../activity/types.js";
 import {
   bigserial,
   check,
   customType,
   foreignKey,
+  index,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -78,6 +81,7 @@ export const messages = pgTable(
       table.senderAgentId,
       table.idempotencyKey,
     ),
+    unique("messages_id_project_unique").on(table.id, table.projectId),
     foreignKey({
       name: "messages_sender_project_fk",
       columns: [table.senderAgentId, table.projectId],
@@ -95,6 +99,69 @@ export const messages = pgTable(
   ],
 );
 
+export const activityEvents = pgTable(
+  "activity_events",
+  {
+    sequence: bigserial("sequence", { mode: "number" }).primaryKey(),
+    id: uuid("id").notNull().defaultRandom().unique(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    requestId: uuid("request_id").notNull(),
+    eventType: varchar("event_type", { length: 64 }).notNull(),
+    outcome: varchar("outcome", { length: 16 }).notNull(),
+    actorAgentId: uuid("actor_agent_id"),
+    targetAgentId: uuid("target_agent_id"),
+    messageId: uuid("message_id"),
+    errorCode: varchar("error_code", { length: 64 }),
+    metadata: jsonb("metadata")
+      .$type<ActivityMetadata>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      "activity_events_type_check",
+      sql`${table.eventType} IN ('agent.registered', 'agent.registration_failed', 'agent.synced', 'message.sent', 'message.send_failed', 'message.acknowledged', 'mcp.request_failed')`,
+    ),
+    check(
+      "activity_events_outcome_check",
+      sql`${table.outcome} IN ('success', 'failure')`,
+    ),
+    foreignKey({
+      name: "activity_events_actor_project_fk",
+      columns: [table.actorAgentId, table.projectId],
+      foreignColumns: [agents.id, agents.projectId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "activity_events_target_project_fk",
+      columns: [table.targetAgentId, table.projectId],
+      foreignColumns: [agents.id, agents.projectId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "activity_events_message_project_fk",
+      columns: [table.messageId, table.projectId],
+      foreignColumns: [messages.id, messages.projectId],
+    }).onDelete("cascade"),
+    index("activity_events_project_sequence_idx").on(
+      table.projectId,
+      table.sequence.desc(),
+    ),
+    index("activity_events_project_type_sequence_idx").on(
+      table.projectId,
+      table.eventType,
+      table.sequence.desc(),
+    ),
+    index("activity_events_project_actor_sequence_idx").on(
+      table.projectId,
+      table.actorAgentId,
+      table.sequence.desc(),
+    ),
+  ],
+);
+
 export type Project = typeof projects.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
 export type Message = typeof messages.$inferSelect;
+export type ActivityEvent = typeof activityEvents.$inferSelect;

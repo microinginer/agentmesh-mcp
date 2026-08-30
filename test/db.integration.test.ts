@@ -18,7 +18,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await database.pool.query(
-    "TRUNCATE TABLE messages, agents, project_tokens, projects RESTART IDENTITY CASCADE",
+    "TRUNCATE TABLE activity_events, messages, agents, project_tokens, projects RESTART IDENTITY CASCADE",
   );
 });
 
@@ -27,16 +27,17 @@ afterAll(async () => {
 });
 
 describe("PostgreSQL tenant invariants", () => {
-  it("migrates an empty database to the four-table MVP schema", async () => {
+  it("migrates an empty database to the five-table journal schema", async () => {
     const result = await database.pool.query<{ table_name: string }>(
       `SELECT table_name
          FROM information_schema.tables
         WHERE table_schema = 'public'
-          AND table_name IN ('projects', 'project_tokens', 'agents', 'messages')
+          AND table_name IN ('projects', 'project_tokens', 'agents', 'messages', 'activity_events')
         ORDER BY table_name`,
     );
 
     expect(result.rows.map((row) => row.table_name)).toEqual([
+      "activity_events",
       "agents",
       "messages",
       "project_tokens",
