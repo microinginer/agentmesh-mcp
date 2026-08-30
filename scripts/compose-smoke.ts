@@ -7,6 +7,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
+import {
+  SAFE_HTTP_ERROR,
+  assertSecretFree,
+  fetchWithTimeout,
+  readSecretFreeJson,
+} from "./compose-smoke-helpers.js";
+
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const composeProject = process.env.AGENTMESH_SMOKE_PROJECT ?? "agentmesh-mvp-smoke";
 const port = Number(process.env.AGENTMESH_SMOKE_PORT ?? "31337");
@@ -54,9 +61,7 @@ async function compose(...args: string[]): Promise<string> {
 async function waitForHealth(): Promise<void> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
-      const response = await fetch(new URL("/health", endpoint), {
-        signal: AbortSignal.timeout(1_000),
-      });
+      const response = await fetchWithTimeout(new URL("/health", endpoint), {}, 1_000);
       if (response.ok) {
         return;
       }
@@ -110,44 +115,31 @@ function items(value: unknown, description: string): Record<string, unknown>[] {
   return (value as unknown[]).map((item, index) => record(item, `${description}[${index}]`));
 }
 
-async function boundedJson(response: Response, description: string): Promise<Record<string, unknown>> {
-  const contentLength = response.headers.get("content-length");
-  if (contentLength !== null) {
-    const parsed = Number(contentLength);
-    assert(Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 256 * 1024, `${description} is too large`);
-  }
-  const body = await response.text();
-  assert(body.length <= 256 * 1024, `${description} is too large`);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    throw new Error(`${description} is not valid JSON`);
-  }
-  return record(parsed, description);
-}
-
 async function adminLogin(): Promise<string> {
-  const response = await fetch(new URL("/admin/session", endpoint), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token: smokeAdminToken }),
-  });
-  assert.equal(response.status, 204, "Smoke admin login must succeed");
+  const response = await fetchWithTimeout(
+    new URL("/admin/session", endpoint),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: smokeAdminToken }),
+    },
+  );
+  if (response.status !== 204) throw new Error(SAFE_HTTP_ERROR);
   const setCookie = response.headers.get("set-cookie");
-  assert.notEqual(setCookie, null, "Smoke admin login must set a cookie");
+  if (setCookie === null) throw new Error(SAFE_HTTP_ERROR);
   const cookie = (setCookie as string).split(";", 1)[0];
-  assert(cookie !== undefined && cookie.includes("="), "Smoke admin login returned an invalid cookie");
+  if (cookie === undefined || !cookie.includes("=")) throw new Error(SAFE_HTTP_ERROR);
   return cookie;
 }
 
-async function adminGet(path: string, cookie: string): Promise<Record<string, unknown>> {
-  assert.match(path, /^\/api\/admin\//, "Smoke admin requests must target the admin API");
-  const response = await fetch(new URL(path, endpoint), {
-    headers: { cookie },
-  });
-  assert.equal(response.status, 200, `Admin API ${path} must return 200`);
-  return boundedJson(response, `Admin API ${path}`);
+async function adminGet(path: string, cookie: string, secrets: readonly string[]): Promise<Record<string, unknown>> {
+  if (!path.startsWith("/api/admin/")) throw new Error(SAFE_HTTP_ERROR);
+  const response = await fetchWithTimeout(new URL(path, endpoint), { headers: { cookie } });
+  if (response.status !== 200) {
+    void response.body?.cancel().catch(() => {});
+    throw new Error(SAFE_HTTP_ERROR);
+  }
+  return readSecretFreeJson(response, secrets);
 }
 
 function decodeProjects(value: Record<string, unknown>): AdminState["projects"] {
@@ -193,12 +185,12 @@ function decodeEvents(value: Record<string, unknown>): AdminEvents {
   };
 }
 
-async function readAdminState(projectId: string, cookie: string): Promise<AdminState> {
+async function readAdminState(projectId: string, cookie: string, secrets: readonly string[]): Promise<AdminState> {
   const [projects, summary, messages, events] = await Promise.all([
-    adminGet("/api/admin/projects", cookie),
-    adminGet(`/api/admin/projects/${projectId}/summary`, cookie),
-    adminGet(`/api/admin/projects/${projectId}/messages`, cookie),
-    adminGet(`/api/admin/projects/${projectId}/events`, cookie),
+    adminGet("/api/admin/projects", cookie, secrets),
+    adminGet(`/api/admin/projects/${projectId}/summary`, cookie, secrets),
+    adminGet(`/api/admin/projects/${projectId}/messages`, cookie, secrets),
+    adminGet(`/api/admin/projects/${projectId}/events`, cookie, secrets),
   ]);
   return {
     projects: decodeProjects(projects),
@@ -206,14 +198,6 @@ async function readAdminState(projectId: string, cookie: string): Promise<AdminS
     messages: decodeMessages(messages),
     events: decodeEvents(events),
   };
-}
-
-function assertSecretFree(value: unknown, secrets: readonly string[]): void {
-  const rendered = JSON.stringify(value);
-  assert.doesNotMatch(rendered, /am_(?:proj|agent)_[A-Za-z0-9_-]+|authorization/i);
-  for (const secret of secrets) {
-    assert.equal(rendered.includes(secret), false, "Smoke data must not contain credentials");
-  }
 }
 
 function assertAdminState(
@@ -475,8 +459,8 @@ async function main(): Promise<{
   }
 
   const preRestartCookie = await adminLogin();
-  const preRestartState = await readAdminState(projectId, preRestartCookie);
   const secrets = [smokeAdminToken, projectToken, agentA.token, agentB.token];
+  const preRestartState = await readAdminState(projectId, preRestartCookie, secrets);
   assertAdminState(preRestartState, { projectId, messageIds: [outboundMessageId, replyMessageId] }, secrets);
 
   await compose("restart", "agentmesh");
@@ -510,13 +494,13 @@ async function main(): Promise<{
     await finalB.close();
   }
 
-  const health = await fetch(new URL("/health", endpoint));
-  assert.equal(health.status, 200, "Smoke health endpoint must return 200 after restart");
-  const adminPage = await fetch(new URL("/admin", endpoint));
-  assert.equal(adminPage.status, 200, "Smoke admin page must return 200 after restart");
+  const health = await fetchWithTimeout(new URL("/health", endpoint), {});
+  if (health.status !== 200) throw new Error(SAFE_HTTP_ERROR);
+  const adminPage = await fetchWithTimeout(new URL("/admin", endpoint), {});
+  if (adminPage.status !== 200) throw new Error(SAFE_HTTP_ERROR);
 
   const postRestartCookie = await adminLogin();
-  const postRestartState = await readAdminState(projectId, postRestartCookie);
+  const postRestartState = await readAdminState(projectId, postRestartCookie, secrets);
   assertAdminState(postRestartState, { projectId, messageIds: [outboundMessageId, replyMessageId] }, secrets);
   assert.deepEqual(postRestartState, preRestartState, "Admin state must survive the final restart");
 
