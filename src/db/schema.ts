@@ -7,6 +7,7 @@ import {
   foreignKey,
   index,
   jsonb,
+  pgSchema,
   pgTable,
   text,
   timestamp,
@@ -159,6 +160,66 @@ export const activityEvents = pgTable(
       table.sequence.desc(),
     ),
   ],
+);
+
+export const observer = pgSchema("observer");
+
+export const observerProjects = observer.view("projects").as((query) =>
+  query
+    .select({
+      id: projects.id,
+      name: projects.name,
+      createdAt: projects.createdAt,
+    })
+    .from(projects),
+);
+
+export const observerAgents = observer.view("agents").as((query) =>
+  query
+    .select({
+      id: agents.id,
+      projectId: agents.projectId,
+      name: agents.name,
+      client: agents.client,
+      capabilities: agents.capabilities,
+      lastSeenAt: agents.lastSeenAt,
+      createdAt: agents.createdAt,
+    })
+    .from(agents),
+);
+
+export const observerMessages = observer.view("messages").as((query) =>
+  query
+    .select({
+      sequence: messages.sequence,
+      id: messages.id,
+      projectId: messages.projectId,
+      senderAgentId: messages.senderAgentId,
+      recipientAgentId: messages.recipientAgentId,
+      text: messages.text,
+      createdAt: messages.createdAt,
+      acknowledgedAt: messages.acknowledgedAt,
+    })
+    .from(messages),
+);
+
+export const observerActivityEvents = observer.view("activity_events").as((query) =>
+  query
+    .select({
+      sequence: activityEvents.sequence,
+      id: activityEvents.id,
+      projectId: activityEvents.projectId,
+      requestId: activityEvents.requestId,
+      eventType: activityEvents.eventType,
+      outcome: activityEvents.outcome,
+      actorAgentId: activityEvents.actorAgentId,
+      targetAgentId: activityEvents.targetAgentId,
+      messageId: activityEvents.messageId,
+      errorCode: activityEvents.errorCode,
+      metadata: activityEvents.metadata,
+      createdAt: activityEvents.createdAt,
+    })
+    .from(activityEvents),
 );
 
 export type Project = typeof projects.$inferSelect;

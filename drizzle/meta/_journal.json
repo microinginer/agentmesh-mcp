@@ -15,6 +15,13 @@
       "when": 1788117795478,
       "tag": "0001_dry_blink",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788123941027,
+      "tag": "0002_tidy_magus",
+      "breakpoints": true
     }
   ]
 }

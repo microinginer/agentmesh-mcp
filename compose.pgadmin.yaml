@@ -1,0 +1,4 @@
+services:
+  postgres:
+    ports:
+      - 127.0.0.1:${AGENTMESH_DB_OBSERVER_PORT:-55433}:5432
