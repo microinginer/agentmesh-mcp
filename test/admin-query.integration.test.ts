@@ -320,6 +320,78 @@ describe("project-scoped admin read models", () => {
     expect(await service.getSummary(randomUUID())).toEqual({ found: false });
   });
 
+  it("treats a cross-project agent filter as not found", async () => {
+    const fixture = await seedFixture();
+
+    const [filteredMessages, filteredEvents] = await Promise.all([
+      service.listMessages(fixture.projectA, { limit: 50, agent_id: fixture.betaSender }),
+      service.listEvents(fixture.projectA, { limit: 50, agent_id: fixture.betaSender }),
+    ]);
+
+    expect([filteredMessages, filteredEvents]).toEqual([{ found: false }, { found: false }]);
+  });
+
+  it("does not skip a project at a sub-millisecond cursor boundary", async () => {
+    const olderProjectId = randomUUID();
+    const newerProjectId = randomUUID();
+    await database.pool.query(
+      "INSERT INTO projects (id, name, created_at) VALUES ($1, $2, $3::timestamptz), ($4, $5, $6::timestamptz)",
+      [
+        olderProjectId,
+        "older",
+        "2026-08-30T10:00:00.123001Z",
+        newerProjectId,
+        "newer",
+        "2026-08-30T10:00:00.123999Z",
+      ],
+    );
+
+    const first = await service.listProjects({ limit: 1 });
+    const second = await service.listProjects({ limit: 1, cursor: first.next_cursor ?? undefined });
+
+    expect(first.items.map((project) => project.id)).toEqual([newerProjectId]);
+    expect(second.items.map((project) => project.id)).toEqual([olderProjectId]);
+  });
+
+  it("does not skip an agent at a sub-millisecond cursor boundary", async () => {
+    const projectId = randomUUID();
+    const olderAgentId = randomUUID();
+    const newerAgentId = randomUUID();
+    await database.db.insert(projects).values({ id: projectId, name: "alpha" });
+    await database.pool.query(
+      `INSERT INTO agents (
+         id, project_id, registration_digest, name, client, capabilities, last_seen_at, created_at
+       ) VALUES
+         ($1, $2, $3, $4, $5, ARRAY[]::text[], $6::timestamptz, $7::timestamptz),
+         ($8, $2, $9, $10, $5, ARRAY[]::text[], $6::timestamptz, $11::timestamptz)`,
+      [
+        olderAgentId,
+        projectId,
+        Buffer.alloc(32, 6),
+        "older",
+        "codex",
+        "2026-08-30T12:00:00.000000Z",
+        "2026-08-30T10:00:00.123001Z",
+        newerAgentId,
+        Buffer.alloc(32, 7),
+        "newer",
+        "2026-08-30T10:00:00.123999Z",
+      ],
+    );
+
+    const first = await service.listAgents(projectId, { limit: 1 });
+    if (!first.found) throw new Error("expected agent project");
+    const second = await service.listAgents(projectId, {
+      limit: 1,
+      cursor: first.data.next_cursor ?? undefined,
+    });
+
+    expect(first.data.items.map((agent) => agent.id)).toEqual([newerAgentId]);
+    expect(second).toMatchObject({ found: true });
+    if (!second.found) throw new Error("expected second agent page");
+    expect(second.data.items.map((agent) => agent.id)).toEqual([olderAgentId]);
+  });
+
   it("uses stable history cursors and drainable ascending live cursors", async () => {
     const fixture = await seedFixture();
     const first = await service.listMessages(fixture.projectA, { limit: 2 });

@@ -9,6 +9,7 @@ import {
   isNull,
   lt,
   or,
+  sql,
   type SQL,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -99,31 +100,39 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
     return project !== undefined;
   }
 
+  async function projectAgentExists(projectId: string, agentId: string): Promise<boolean> {
+    const [agent] = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.projectId, projectId), eq(agents.id, agentId)))
+      .limit(1);
+    return agent !== undefined;
+  }
+
   async function listProjects(input: AdminListQuery) {
     const query = adminListQuerySchema.parse(input);
     const cursor = query.cursor === undefined ? undefined : decodeAdminCursor(query.cursor);
+    const createdAt = sql<string>`to_char(${projects.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
     const rows = await db
-      .select({ id: projects.id, name: projects.name, created_at: projects.createdAt })
+      .select({ id: projects.id, name: projects.name, created_at: createdAt })
       .from(projects)
       .where(
         cursor?.kind === "created"
           ? or(
-              lt(projects.createdAt, new Date(cursor.created_at)),
-              and(eq(projects.createdAt, new Date(cursor.created_at)), lt(projects.id, cursor.id)),
+              lt(createdAt, cursor.created_at),
+              and(eq(createdAt, cursor.created_at), lt(projects.id, cursor.id)),
             )
           : undefined,
       )
       .orderBy(desc(projects.createdAt), desc(projects.id))
       .limit(query.limit + 1);
-    return createdPage(
-      rows.map((row) => ({ ...row, created_at: row.created_at.toISOString() })),
-      query.limit,
-    );
+    return createdPage(rows, query.limit);
   }
 
   async function getSummary(projectId: string) {
+    const createdAt = sql<string>`to_char(${projects.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
     const [project] = await db
-      .select({ id: projects.id, name: projects.name, created_at: projects.createdAt })
+      .select({ id: projects.id, name: projects.name, created_at: createdAt })
       .from(projects)
       .where(eq(projects.id, projectId))
       .limit(1);
@@ -156,7 +165,7 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
     return {
       found: true as const,
       data: {
-        project: { ...project, created_at: project.created_at.toISOString() },
+        project,
         agents: presence,
         messages: {
           total: projectMessages.length,
@@ -172,6 +181,7 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
     const query = adminListQuerySchema.parse(input);
     if (!(await projectExists(projectId))) return { found: false as const };
     const cursor = query.cursor === undefined ? undefined : decodeAdminCursor(query.cursor);
+    const createdAt = sql<string>`to_char(${agents.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
     const rows = await db
       .select({
         id: agents.id,
@@ -179,7 +189,7 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
         client: agents.client,
         capabilities: agents.capabilities,
         last_seen_at: agents.lastSeenAt,
-        created_at: agents.createdAt,
+        created_at: createdAt,
       })
       .from(agents)
       .where(
@@ -187,8 +197,8 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
           eq(agents.projectId, projectId),
           cursor?.kind === "created"
             ? or(
-                lt(agents.createdAt, new Date(cursor.created_at)),
-                and(eq(agents.createdAt, new Date(cursor.created_at)), lt(agents.id, cursor.id)),
+                lt(createdAt, cursor.created_at),
+                and(eq(createdAt, cursor.created_at), lt(agents.id, cursor.id)),
               )
             : undefined,
         ),
@@ -203,7 +213,6 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
           ...row,
           status: presenceAt(row.last_seen_at, now),
           last_seen_at: row.last_seen_at.toISOString(),
-          created_at: row.created_at.toISOString(),
         })),
         query.limit,
       ),
@@ -213,6 +222,9 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
   async function listMessages(projectId: string, input: MessageListQuery) {
     const query = messageListQuerySchema.parse(input);
     if (!(await projectExists(projectId))) return { found: false as const };
+    if (query.agent_id !== undefined && !(await projectAgentExists(projectId, query.agent_id))) {
+      return { found: false as const };
+    }
     const sender = alias(agents, "admin_message_sender");
     const recipient = alias(agents, "admin_message_recipient");
     const cursorValue = query.cursor ?? query.after;
@@ -309,6 +321,9 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
   async function listEvents(projectId: string, input: EventListQuery) {
     const query = eventListQuerySchema.parse(input);
     if (!(await projectExists(projectId))) return { found: false as const };
+    if (query.agent_id !== undefined && !(await projectAgentExists(projectId, query.agent_id))) {
+      return { found: false as const };
+    }
     const actor = alias(agents, "admin_event_actor");
     const target = alias(agents, "admin_event_target");
     const cursorValue = query.cursor ?? query.after;
