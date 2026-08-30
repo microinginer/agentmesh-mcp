@@ -13,6 +13,8 @@ describe("local admin dashboard page", () => {
     expect(page.body).toContain(`nonce="${nonce}"`);
     expect(page.body).toContain('id="project-selector"');
     expect(page.body).toContain('aria-live="polite"');
+    expect(page.body).toContain('data-state="connecting"');
+    expect(page.body).toContain("Connecting…");
     expect(page.body).toContain('data-tab="activity"');
     expect(page.body).toContain('data-tab="messages"');
     expect(page.body).toContain('data-tab="agents"');
@@ -461,6 +463,69 @@ describe("dashboard browser controller", () => {
     expect(harness.node("summary-project").textContent).toBe("—");
     expect(allText(harness.node("data-view"))).toContain("Loading project…");
     expect(harness.node("detail-drawer").hidden).toBe(true);
+    expect(harness.node("connection-status").textContent).toBe("Connecting…");
+  });
+
+  it("shows connecting immediately for tab and filter context refreshes", async () => {
+    const base = dashboardReply("project-a");
+    const messageLoad = deferred<FetchReply>();
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success(base.projects);
+      if (request.pathname.endsWith("/summary")) return success(base.summary);
+      if (request.pathname.endsWith("/agents")) return success(base.agents);
+      if (request.pathname.endsWith("/messages")) return messageLoad.promise;
+      return success(base.events);
+    });
+
+    await harness.settle();
+    harness.tab("messages").dispatch("click");
+    expect(harness.node("connection-status").textContent).toBe("Connecting…");
+    messageLoad.resolve(success(base.messages));
+    await harness.settle();
+    expect(harness.node("connection-status").textContent).toBe("Connected");
+    const filter = harness.node("filters").children[0]?.children[0];
+    filter?.dispatch("change");
+    expect(harness.node("connection-status").textContent).toBe("Connecting…");
+  });
+
+  it("leaves the current context timer and in-flight poll owned by B when stale A completes", async () => {
+    const projectA = dashboardReply("project-a");
+    const projectB = dashboardReply("project-b");
+    const pollA = deferred<FetchReply>();
+    const pollB = deferred<FetchReply>();
+    let aEvents = 0;
+    let bEvents = 0;
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }] });
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return success(projectA.summary);
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) return success(projectA.agents);
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/events")) {
+        aEvents += 1;
+        return aEvents === 1 ? success(projectA.events) : pollA.promise;
+      }
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/summary")) return success(projectB.summary);
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/agents")) return success(projectB.agents);
+      bEvents += 1;
+      return bEvents === 1 ? success(projectB.events) : pollB.promise;
+    });
+
+    await harness.settle();
+    await harness.runTimer();
+    harness.node("project-selector").value = "project-b";
+    harness.node("project-selector").dispatch("change");
+    await harness.settle();
+    expect(harness.timers).toHaveLength(1);
+    await harness.runTimer();
+    expect(harness.timers).toHaveLength(0);
+    pollA.resolve(success({ has_more: false, items: [] }));
+    await harness.settle();
+    expect(harness.timers).toHaveLength(0);
+    pollB.resolve(success({ has_more: false, items: [] }));
+    await harness.settle();
+    expect(harness.timers).toHaveLength(1);
+    expect(harness.timers[0]?.delay).toBe(1_000);
   });
 
   it("slows hidden polling and defers incoming activity while the operator is scrolled away", async () => {

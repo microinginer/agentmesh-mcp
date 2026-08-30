@@ -17,17 +17,18 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
 (() => {
   const byId = (id) => document.getElementById(id);
   const state = {
-    agents: [], failures: 0, filterSignature: "", generation: 0, pendingActivity: [], pollTimer: null, polling: false,
+    activePoll: null, agents: [], failures: 0, filterSignature: "", generation: 0, pendingActivity: [], pollOwner: 0, pollTimer: null,
     projectId: null, rows: { activity: [], messages: [], agents: [] },
     ready: false, sequences: { activity: 0, messages: 0 }, tab: "activity"
   };
   const app = byId("app");
   const loginForm = byId("login-form");
   const setText = (id, value) => { const node = byId(id); if (node) node.textContent = String(value); };
-  const setStatus = (connected, detail, context) => {
+  const setStatus = (status, detail, context) => {
     if (context && !current(context)) return;
     const node = byId("connection-status");
-    if (node) { node.dataset.state = connected ? "connected" : "disconnected"; node.textContent = detail || (connected ? "Connected" : "Disconnected"); }
+    const stateName = typeof status === "string" ? status : (status ? "connected" : "disconnected");
+    if (node) { node.dataset.state = stateName; node.textContent = detail || (stateName === "connected" ? "Connected" : stateName === "connecting" ? "Connecting…" : "Disconnected"); }
   };
   const request = async (path, options) => {
     const response = await fetch(path, { credentials: "same-origin", ...options });
@@ -58,7 +59,15 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
   const snapshot = () => ({ filters: state.filterSignature, generation: state.generation, projectId: state.projectId, tab: state.tab });
   const current = (context) => context.filters === state.filterSignature && context.generation === state.generation && context.projectId === state.projectId && context.tab === state.tab;
   const projectUrl = (projectId) => "/api/admin/projects/" + encodeURIComponent(projectId);
-  const bumpGeneration = () => { state.generation += 1; return snapshot(); };
+  const bumpGeneration = (invalidatePoll = true) => {
+    state.generation += 1;
+    if (invalidatePoll) {
+      state.pollOwner += 1; state.activePoll = null;
+      if (state.pollTimer !== null) window.clearTimeout(state.pollTimer);
+      state.pollTimer = null;
+    }
+    return snapshot();
+  };
   const renderSummary = (summary) => {
     setText("summary-project", summary.project.name);
     setText("summary-agents", summary.agents.online + " / " + summary.agents.total);
@@ -79,7 +88,7 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
     filters.querySelectorAll("select").forEach((field) => { field.value = selected.get(field.name) || ""; });
     filters.querySelectorAll("select").forEach((field) => field.addEventListener("change", () => {
       state.filterSignature = filterQuery(); resetContext(false); const context = bumpGeneration();
-      loadProject(context).then(loaded => { if (loaded && current(context)) { state.failures = 0; setStatus(true, "Connected", context); } }).catch(() => disconnected(context));
+      startContextLoad(context);
     }));
   };
   const header = (labels) => {
@@ -121,6 +130,7 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
   };
   const resetContext = (projectChanged) => {
     state.ready = false; state.pendingActivity = []; byId("new-activity").hidden = true;
+    setStatus("connecting", "Connecting…");
     state.sequences = { activity: 0, messages: 0 };
     if (projectChanged) {
       state.agents = []; state.rows = { activity: [], messages: [], agents: [] };
@@ -174,7 +184,7 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
     if (!state.projectId) state.projectId = projects.items[0] ? projects.items[0].id : null;
     if (state.projectId === null) return false;
     selector.value = state.projectId;
-    const projectContext = bumpGeneration();
+    const projectContext = bumpGeneration(false);
     try { return await loadProject(projectContext); }
     catch {
       disconnected(projectContext);
@@ -197,13 +207,31 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
     }
     state.sequences[tab] = newest;
   };
-  const schedulePoll = (delay) => {
+  const schedulePoll = (delay, owner = state.pollOwner) => {
+    if (owner !== state.pollOwner) return;
     if (state.pollTimer !== null) window.clearTimeout(state.pollTimer);
-    state.pollTimer = window.setTimeout(poll, delay);
+    state.pollTimer = window.setTimeout(() => {
+      if (owner !== state.pollOwner) return;
+      state.pollTimer = null; poll(owner);
+    }, delay);
   };
-  const poll = async () => {
-    if (state.polling) return;
-    state.polling = true;
+  const startContextLoad = (context, owner = state.pollOwner) => {
+    loadProject(context)
+      .then(loaded => {
+        if (loaded && current(context) && owner === state.pollOwner) {
+          state.failures = 0; setStatus(true, "Connected", context);
+        }
+      })
+      .catch(() => disconnected(context))
+      .finally(() => {
+        if (current(context) && owner === state.pollOwner) {
+          schedulePoll(state.failures === 0 ? 1_000 : Math.min(15_000, 1_000 * 2 ** (state.failures - 1)), owner);
+        }
+      });
+  };
+  const poll = async (owner = state.pollOwner) => {
+    if (owner !== state.pollOwner || state.activePoll === owner) return;
+    state.activePoll = owner;
     let context = snapshot();
     try {
       if (!state.ready) {
@@ -220,11 +248,13 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
       state.failures = 0; setStatus(true, "Connected", context);
     } catch { disconnected(context); }
     finally {
-      state.polling = false;
-      schedulePoll(document.hidden ? 15_000 : (state.failures === 0 ? 1_000 : Math.min(15_000, 1_000 * 2 ** (state.failures - 1))));
+      if (owner !== state.pollOwner || state.activePoll !== owner) return;
+      state.activePoll = null;
+      schedulePoll(document.hidden ? 15_000 : (state.failures === 0 ? 1_000 : Math.min(15_000, 1_000 * 2 ** (state.failures - 1))), owner);
     }
   };
   const boot = async () => {
+    const owner = state.pollOwner;
     const context = snapshot();
     try {
       const loaded = await loadProjects();
@@ -232,7 +262,7 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
       if (!loaded || !current(completed)) return;
       state.failures = 0; setStatus(true, "Connected", completed);
     } catch { disconnected(context); }
-    finally { schedulePoll(1_000); }
+    finally { if (owner === state.pollOwner) schedulePoll(1_000, owner); }
   };
   if (loginForm) loginForm.addEventListener("submit", async (event) => {
     event.preventDefault(); const error = byId("login-error"); error.textContent = "";
@@ -245,13 +275,13 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
     byId("project-selector").addEventListener("change", (event) => {
       state.projectId = event.currentTarget.value; state.filterSignature = ""; resetContext(true);
       const context = bumpGeneration();
-      loadProject(context).then(loaded => { if (loaded && current(context)) { state.failures = 0; setStatus(true, "Connected", context); } }).catch(() => disconnected(context));
+      startContextLoad(context);
     });
     document.querySelectorAll("[role=tab]").forEach((tab) => tab.addEventListener("click", () => {
       state.tab = tab.dataset.tab; state.filterSignature = ""; resetContext(false); const context = bumpGeneration();
       document.querySelectorAll("[role=tab]").forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
       renderFilters();
-      loadProject(context).then(loaded => { if (loaded && current(context)) { state.failures = 0; setStatus(true, "Connected", context); } }).catch(() => disconnected(context));
+      startContextLoad(context);
     }));
     byId("logout-button").addEventListener("click", async () => { await fetch("/admin/session", { method: "DELETE", credentials: "same-origin" }); window.location.reload(); });
     byId("drawer-close").addEventListener("click", () => { byId("detail-drawer").hidden = true; });

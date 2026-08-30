@@ -19,6 +19,7 @@ h2 { margin: 0; font-size: 20px; letter-spacing: -.015em; }
 .status { color: var(--muted); font-size: 12px; font-weight: 650; }
 .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
 .status[data-state="disconnected"]::before { background: var(--danger); }
+.status[data-state="connecting"]::before { background: var(--muted); }
 .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 4px 0 24px; }
 .metric { min-height: 104px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .metric-label { color: var(--muted); font-size: 12px; font-weight: 650; }
