@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createActivityService } from "../src/activity/service.js";
 import { createDatabase } from "../src/db/client.js";
@@ -8,6 +8,7 @@ import { migrateDatabase } from "../src/db/migrate.js";
 import { activityEvents, agents, messages, projects } from "../src/db/schema.js";
 import type { AgentMeshErrorCode } from "../src/errors.js";
 import type { ActivityMetadata } from "../src/activity/types.js";
+import { createSafeLogger } from "../src/logging.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
@@ -27,6 +28,10 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await database.pool.end();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 async function createProjectMessageFixture() {
@@ -67,6 +72,31 @@ async function createProjectMessageFixture() {
 }
 
 describe("activity journal persistence", () => {
+  it("writes only the closed safe logger DTO as one stderr JSON line", () => {
+    const writes: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    const logger = createSafeLogger();
+
+    logger.write({
+      event: "mcp.request_failed",
+      request_id: "request-123",
+      project_id: "project-456",
+      error_code: "INTERNAL_ERROR",
+      ...({
+        text: "attempted message must not be logged",
+        authorization: "Bearer secret-token",
+        error: new Error("raw error must not be logged"),
+      } as object),
+    });
+
+    expect(writes).toEqual([
+      '{"event":"mcp.request_failed","request_id":"request-123","project_id":"project-456","error_code":"INTERNAL_ERROR"}\n',
+    ]);
+  });
+
   it("stores only explicitly selected activity fields", async () => {
     const { projectId, senderId, recipientId, messageId } =
       await createProjectMessageFixture();

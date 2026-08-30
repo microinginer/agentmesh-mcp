@@ -10,6 +10,7 @@ import type { AuthInfo } from "@modelcontextprotocol/server";
 
 import type { AgentMeshDatabase } from "./db/client.js";
 import { AgentMeshError } from "./errors.js";
+import { createSafeLogger } from "./logging.js";
 import { buildMcpHandler } from "./mcp/server.js";
 import type { ProjectService } from "./projects/service.js";
 
@@ -32,6 +33,7 @@ function bearerFromHeader(header: string | undefined): string | null {
 }
 
 export function buildHttpApp(dependencies: HttpAppDependencies) {
+  const logger = createSafeLogger();
   const app = createMcpFastifyApp({
     host: dependencies.host,
     allowedHosts: dependencies.allowedHosts,
@@ -40,6 +42,7 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
   const mcpHandler = buildMcpHandler({
     db: dependencies.db,
     signingKey: dependencies.signingKey,
+    logger,
   });
   const nodeHandler = toNodeHandler(mcpHandler);
 
@@ -58,6 +61,7 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
       if (error instanceof AgentMeshError && error.code === "PROJECT_AUTH_INVALID") {
         return reply.header("WWW-Authenticate", "Bearer").code(401).send({ error: "unauthorized" });
       }
+      logger.write({ event: "http.request_failed", error_code: "INTERNAL_ERROR" });
       return reply.code(500).send({ error: "internal_error" });
     }
 

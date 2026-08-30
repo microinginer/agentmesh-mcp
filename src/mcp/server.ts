@@ -7,7 +7,7 @@ import {
   type McpHttpHandler,
 } from "@modelcontextprotocol/server";
 
-import { createActivityService } from "../activity/service.js";
+import { createActivityService, type ActivityService } from "../activity/service.js";
 import { createAgentService } from "../agents/service.js";
 import {
   listAgentsInputSchema,
@@ -19,11 +19,21 @@ import {
 } from "../contracts.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { AgentMeshError } from "../errors.js";
+import type { SafeLogger } from "../logging.js";
 import { createMessageService } from "../messages/service.js";
 
 interface McpHandlerDependencies {
   db: AgentMeshDatabase;
   signingKey: Buffer;
+  logger: SafeLogger;
+}
+
+export interface RunToolOptions {
+  projectId: string;
+  requestId: string;
+  activity: Pick<ActivityService, "recordBestEffort">;
+  logger: SafeLogger;
+  domainFailureRecordedByService: boolean;
 }
 
 function toolResult(payload: Record<string, unknown>, isError = false): CallToolResult {
@@ -34,17 +44,42 @@ function toolResult(payload: Record<string, unknown>, isError = false): CallTool
   };
 }
 
-async function runTool(operation: () => Promise<Record<string, unknown>>): Promise<CallToolResult> {
+export async function runTool(
+  operation: () => Promise<Record<string, unknown>>,
+  options: RunToolOptions,
+): Promise<CallToolResult> {
   try {
     return toolResult(await operation());
   } catch (error) {
     if (error instanceof AgentMeshError) {
+      if (!options.domainFailureRecordedByService) {
+        await options.activity.recordBestEffort({
+          projectId: options.projectId,
+          requestId: options.requestId,
+          eventType: "mcp.request_failed",
+          outcome: "failure",
+          errorCode: error.code,
+        });
+      }
       return toolResult(
         { ok: false, error: { code: error.code, message: error.message } },
         true,
       );
     }
 
+    await options.activity.recordBestEffort({
+      projectId: options.projectId,
+      requestId: options.requestId,
+      eventType: "mcp.request_failed",
+      outcome: "failure",
+      errorCode: "INTERNAL_ERROR",
+    });
+    options.logger.write({
+      event: "mcp.request_failed",
+      request_id: options.requestId,
+      project_id: options.projectId,
+      error_code: "INTERNAL_ERROR",
+    });
     return toolResult(
       {
         ok: false,
@@ -55,18 +90,21 @@ async function runTool(operation: () => Promise<Record<string, unknown>>): Promi
   }
 }
 
-export function buildMcpHandler({ db, signingKey }: McpHandlerDependencies): McpHttpHandler {
-  const activity = createActivityService({ db });
+export function buildMcpHandler({ db, signingKey, logger }: McpHandlerDependencies): McpHttpHandler {
+  const activity = createActivityService({
+    db,
+    onPersistFailure: (failure) => logger.write(failure),
+  });
   const agentService = createAgentService({ db, signingKey, activity });
-  const messageService = createMessageService({ db, agentService });
+  const messageService = createMessageService({ db, agentService, activity });
 
   return createMcpHandler(({ authInfo }) => {
-    const projectId = authInfo?.clientId;
+    const authenticatedProjectId = authInfo?.clientId;
     const requireProjectId = (): string => {
-      if (projectId === undefined) {
+      if (authenticatedProjectId === undefined) {
         throw new AgentMeshError("PROJECT_AUTH_INVALID", "Project authentication failed");
       }
-      return projectId;
+      return authenticatedProjectId;
     };
 
     const server = new McpServer({ name: "agentmesh", version: "0.0.1" });
@@ -81,14 +119,21 @@ export function buildMcpHandler({ db, signingKey }: McpHandlerDependencies): Mcp
       },
       async (input) => {
         const context = { requestId: randomUUID() };
+        const projectId = requireProjectId();
         return runTool(async () => {
           if (input.mode === "register") {
-            const registered = await agentService.registerAgent(requireProjectId(), input, context);
+            const registered = await agentService.registerAgent(projectId, input, context);
             return { ok: true, data: { mode: "registered", ...registered } };
           }
 
-          const synced = await agentService.syncAgent(requireProjectId(), input, context);
+          const synced = await agentService.syncAgent(projectId, input, context);
           return { ok: true, data: { mode: "synced", ...synced } };
+        }, {
+          projectId,
+          requestId: context.requestId,
+          activity,
+          logger,
+          domainFailureRecordedByService: true,
         });
       },
     );
@@ -100,11 +145,20 @@ export function buildMcpHandler({ db, signingKey }: McpHandlerDependencies): Mcp
         inputSchema: sendInputSchema,
         outputSchema: sendOutputSchema,
       },
-      async (input) =>
-        runTool(async () => ({
+      async (input) => {
+        const context = { requestId: randomUUID() };
+        const projectId = requireProjectId();
+        return runTool(async () => ({
           ok: true,
-          data: await messageService.sendMessage(requireProjectId(), input),
-        })),
+          data: await messageService.sendMessage(projectId, input, context),
+        }), {
+          projectId,
+          requestId: context.requestId,
+          activity,
+          logger,
+          domainFailureRecordedByService: true,
+        });
+      },
     );
 
     server.registerTool(
@@ -114,11 +168,20 @@ export function buildMcpHandler({ db, signingKey }: McpHandlerDependencies): Mcp
         inputSchema: listAgentsInputSchema,
         outputSchema: listAgentsOutputSchema,
       },
-      async (input) =>
-        runTool(async () => ({
+      async (input) => {
+        const context = { requestId: randomUUID() };
+        const projectId = requireProjectId();
+        return runTool(async () => ({
           ok: true,
-          data: await agentService.listAgents(requireProjectId(), input.agent_token),
-        })),
+          data: await agentService.listAgents(projectId, input.agent_token),
+        }), {
+          projectId,
+          requestId: context.requestId,
+          activity,
+          logger,
+          domainFailureRecordedByService: false,
+        });
+      },
     );
 
     return server;

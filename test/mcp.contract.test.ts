@@ -8,8 +8,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import { activityEvents } from "../src/db/schema.js";
+import { AgentMeshError } from "../src/errors.js";
 import { buildHttpApp } from "../src/http.js";
+import type { SafeLogEvent } from "../src/logging.js";
+import { runTool } from "../src/mcp/server.js";
 import { createProjectService } from "../src/projects/service.js";
+import type { RecordActivityInput } from "../src/activity/service.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
@@ -39,6 +43,78 @@ function structured<T>(result: CallToolResult): T {
 }
 
 describe("AgentMesh MCP over Streamable HTTP", () => {
+  it("records one safe event and response for unexpected MCP failures", async () => {
+    const projectId = randomUUID();
+    const requestId = randomUUID();
+    const recorded: RecordActivityInput[] = [];
+    const logged: SafeLogEvent[] = [];
+    const secret = "raw database error must not escape";
+
+    const result = await runTool(
+      async () => {
+        throw new Error(secret);
+      },
+      {
+        projectId,
+        requestId,
+        activity: {
+          recordBestEffort: async (event) => {
+            recorded.push(event);
+          },
+        },
+        logger: { write: (event) => logged.push(event) },
+        domainFailureRecordedByService: false,
+      },
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        ok: false,
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "AgentMesh could not complete the request",
+        },
+      },
+    });
+    expect(recorded).toEqual([{
+      projectId,
+      requestId,
+      eventType: "mcp.request_failed",
+      outcome: "failure",
+      errorCode: "INTERNAL_ERROR",
+    }]);
+    expect(logged).toEqual([{
+      event: "mcp.request_failed",
+      request_id: requestId,
+      project_id: projectId,
+      error_code: "INTERNAL_ERROR",
+    }]);
+    expect(JSON.stringify({ result, recorded, logged })).not.toContain(secret);
+  });
+
+  it("does not duplicate expected service-owned MCP domain failures", async () => {
+    const recorded: RecordActivityInput[] = [];
+    const result = await runTool(
+      async () => {
+        throw new AgentMeshError("AGENT_AUTH_INVALID", "Agent authentication failed");
+      },
+      {
+        projectId: randomUUID(),
+        requestId: randomUUID(),
+        activity: { recordBestEffort: async (event) => { recorded.push(event); } },
+        logger: { write: () => {} },
+        domainFailureRecordedByService: true,
+      },
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "AGENT_AUTH_INVALID" } },
+    });
+    expect(recorded).toEqual([]);
+  });
+
   it("lets two official SDK clients discover each other and exchange an acknowledged reply", async () => {
     const project = await projectService.createProject("MCP contract");
     const app = buildHttpApp({
@@ -145,6 +221,16 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       expect(discovered.data.agents.map((agent) => agent.id).toSorted()).toEqual(
         [registeredA.data.agent.id, registeredB.data.agent.id].toSorted(),
       );
+
+      const listingFailure = await clientA.callTool({
+        name: "agentmesh_list_agents",
+        arguments: { agent_token: `am_agent_${randomUUID()}.${"a".repeat(43)}` },
+      });
+      expect(listingFailure.isError).toBe(true);
+      expect(JSON.parse((listingFailure.content[0] as { text: string }).text)).toEqual({
+        ok: false,
+        error: { code: "AGENT_AUTH_INVALID", message: "Agent authentication failed" },
+      });
 
       const idempotencyKey = randomUUID();
       const sent = structured<{
@@ -287,6 +373,8 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
           eventType: activityEvents.eventType,
           outcome: activityEvents.outcome,
           messageId: activityEvents.messageId,
+          errorCode: activityEvents.errorCode,
+          metadata: activityEvents.metadata,
         })
         .from(activityEvents)
         .where(eq(activityEvents.projectId, project.project.id));
@@ -296,6 +384,13 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
           (event) => event.eventType === "agent.synced" && event.outcome === "success",
         ),
       ).toHaveLength(5);
+      expect(recordedEvents.filter((event) => event.eventType === "mcp.request_failed")).toEqual([
+        expect.objectContaining({
+          outcome: "failure",
+          errorCode: "AGENT_AUTH_INVALID",
+          metadata: {},
+        }),
+      ]);
       const acknowledgements = recordedEvents.filter(
         (event) => event.eventType === "message.acknowledged",
       );
@@ -312,6 +407,12 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
           ),
         ).toBe(true);
       }
+      const serializedEvents = JSON.stringify(recordedEvents);
+      expect(serializedEvents).not.toContain("Use parser contract v2");
+      expect(serializedEvents).not.toContain(project.token);
+      expect(serializedEvents).not.toContain("am_proj_");
+      expect(serializedEvents).not.toContain("am_agent_");
+      expect(serializedEvents).not.toContain("Authorization");
     } finally {
       await clientA.close();
       await clientB.close();
