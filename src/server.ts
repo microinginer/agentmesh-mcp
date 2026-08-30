@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import type { FastifyInstance } from "fastify";
 
 import { createAdminAuth, type AdminAuth } from "./admin/auth.js";
+import { createAdminQueryService } from "./admin/query-service.js";
 import { loadConfig, type AgentMeshConfig } from "./config.js";
 import { createDatabase, type DatabaseConnection } from "./db/client.js";
 import { migrateDatabase } from "./db/migrate.js";
@@ -29,6 +30,10 @@ export async function startServer(config: AgentMeshConfig): Promise<AgentMeshRun
       projectService,
       host: config.host,
       allowedHosts: config.allowedHosts,
+      admin:
+        adminAuth === null
+          ? null
+          : { auth: adminAuth, queryService: createAdminQueryService({ db: database.db }) },
     });
     await app.listen({ host: config.host, port: config.port });
 

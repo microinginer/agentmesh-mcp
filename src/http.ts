@@ -9,6 +9,8 @@ import {
 import type { AuthInfo } from "@modelcontextprotocol/server";
 
 import type { AgentMeshDatabase } from "./db/client.js";
+import { registerAdminRoutes } from "./admin/routes.js";
+import type { AdminRouteDependencies } from "./admin/routes.js";
 import { AgentMeshError } from "./errors.js";
 import { createSafeLogger } from "./logging.js";
 import type { SafeLogger } from "./logging.js";
@@ -21,6 +23,7 @@ interface HttpAppDependencies {
   projectService: Pick<ProjectService, "authenticateProject">;
   host: string;
   allowedHosts: string[];
+  admin: AdminRouteDependencies | null;
   logger?: SafeLogger;
 }
 
@@ -49,6 +52,10 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
   const nodeHandler = toNodeHandler(mcpHandler);
 
   app.get("/health", async () => ({ status: "ok" }));
+
+  if (dependencies.admin !== null) {
+    registerAdminRoutes(app, dependencies.admin);
+  }
 
   app.post("/mcp", async (request, reply) => {
     const bearer = bearerFromHeader(request.headers.authorization);

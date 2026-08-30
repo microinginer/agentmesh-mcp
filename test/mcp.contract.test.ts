@@ -51,6 +51,7 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       projectService,
       host: "127.0.0.1",
       allowedHosts: ["127.0.0.1", "localhost"],
+      admin: null,
       logger: { write: (event) => logged.push(event) },
     });
     await app.listen({ host: "127.0.0.1", port: 0 });
@@ -169,6 +170,7 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       projectService,
       host: "127.0.0.1",
       allowedHosts: ["127.0.0.1", "localhost"],
+      admin: null,
       logger: { write: () => {} },
     });
     await app.listen({ host: "127.0.0.1", port: 0 });
