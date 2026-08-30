@@ -151,10 +151,12 @@ function dashboardReply(projectId: string) {
 // oxlint-disable-next-line unicorn/consistent-function-scoping -- Generic deferred test fixture must retain its type parameter.
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((nextResolve) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve;
+    reject = nextReject;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function decodeSequenceCursor(value: string): number {
@@ -298,6 +300,32 @@ describe("dashboard browser controller", () => {
     expect(harness.node("connection-status").textContent).toBe("Connected");
   });
 
+  it("retries the complete project load when summary data fails after project selection", async () => {
+    const base = dashboardReply("project-a");
+    let summaries = 0;
+    let initialViews = 0;
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success(base.projects);
+      if (request.pathname.endsWith("/summary")) {
+        summaries += 1;
+        return summaries === 1 ? failure() : success(base.summary);
+      }
+      if (request.pathname.endsWith("/agents")) return success(base.agents);
+      initialViews += 1;
+      return success(base.events);
+    });
+
+    await harness.settle();
+    expect(harness.node("connection-status").textContent).toBe("Disconnected");
+    expect(harness.node("summary-project").textContent).toBe("");
+    await harness.runTimer();
+
+    expect(summaries).toBe(2);
+    expect(initialViews).toBe(2);
+    expect(harness.node("connection-status").textContent).toBe("Connected");
+  });
+
   it("discards a stale project response instead of rendering it into the new project", async () => {
     const projectA = dashboardReply("project-a");
     const projectB = dashboardReply("project-b");
@@ -322,6 +350,117 @@ describe("dashboard browser controller", () => {
     await harness.settle();
 
     expect(harness.node("summary-project").textContent).toBe("project-b");
+  });
+
+  it("ignores a stale rejected project request after the next project has loaded", async () => {
+    const projectB = dashboardReply("project-b");
+    const summaryA = deferred<FetchReply>();
+    const agentsA = deferred<FetchReply>();
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }] });
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return summaryA.promise;
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) return agentsA.promise;
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/summary")) return success(projectB.summary);
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/agents")) return success(projectB.agents);
+      return success(projectB.events);
+    });
+
+    await harness.settle();
+    harness.node("project-selector").value = "project-b";
+    harness.node("project-selector").dispatch("change");
+    await harness.settle();
+    summaryA.reject(new Error("stale project failure"));
+    agentsA.resolve(success({ items: [] }));
+    await harness.settle();
+
+    expect(harness.node("summary-project").textContent).toBe("project-b");
+    expect(harness.node("connection-status").textContent).toBe("Connected");
+  });
+
+  it("does not let a stale polling rejection flip the current project status", async () => {
+    const projectA = dashboardReply("project-a");
+    const projectB = dashboardReply("project-b");
+    const pollA = deferred<FetchReply>();
+    let activityRequests = 0;
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }] });
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return success(projectA.summary);
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) return success(projectA.agents);
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/events")) {
+        activityRequests += 1;
+        return activityRequests === 1 ? success(projectA.events) : pollA.promise;
+      }
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/summary")) return success(projectB.summary);
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/agents")) return success(projectB.agents);
+      return success(projectB.events);
+    });
+
+    await harness.settle();
+    await harness.runTimer();
+    harness.node("project-selector").value = "project-b";
+    harness.node("project-selector").dispatch("change");
+    await harness.settle();
+    pollA.reject(new Error("stale poll failure"));
+    await harness.settle();
+
+    expect(harness.node("summary-project").textContent).toBe("project-b");
+    expect(harness.node("connection-status").textContent).toBe("Connected");
+  });
+
+  it("clears pending activity on tab and filter context changes", async () => {
+    const base = dashboardReply("project-a");
+    let activitySequence = 12;
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success(base.projects);
+      if (request.pathname.endsWith("/summary")) return success(base.summary);
+      if (request.pathname.endsWith("/agents")) return success(base.agents);
+      if (request.pathname.endsWith("/messages")) return success(base.messages);
+      activitySequence += 1;
+      return success({ has_more: false, items: [{ actor: null, created_at: "2026-08-31T00:00:00.000Z", event_type: "agent.synced", id: "event-" + activitySequence, outcome: "success", sequence: activitySequence }] });
+    });
+
+    await harness.settle();
+    harness.window.scrollY = 120;
+    await harness.runTimer();
+    expect(harness.node("new-activity").hidden).toBe(false);
+    harness.tab("messages").dispatch("click");
+    await harness.settle();
+    expect(harness.node("new-activity").hidden).toBe(true);
+    await harness.runTimer();
+    expect(harness.node("new-activity").hidden).toBe(false);
+    const filter = harness.node("filters").children[0]?.children[0];
+    filter?.dispatch("change");
+    await harness.settle();
+    expect(harness.node("new-activity").hidden).toBe(true);
+  });
+
+  it("clears the old project immediately while a replacement load is pending", async () => {
+    const projectA = dashboardReply("project-a");
+    const summaryB = deferred<FetchReply>();
+    const agentsB = deferred<FetchReply>();
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }] });
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return success(projectA.summary);
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) return success(projectA.agents);
+      if (request.pathname.includes("project-a")) return success({ has_more: false, items: [{ actor: null, created_at: "2026-08-31T00:00:00.000Z", event_type: "agent.synced", id: "event-a", outcome: "success", sequence: 12 }] });
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/summary")) return summaryB.promise;
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/agents")) return agentsB.promise;
+      return success({ has_more: false, items: [] });
+    });
+
+    await harness.settle();
+    expect(harness.node("summary-project").textContent).toBe("project-a");
+    harness.node("detail-drawer").hidden = false;
+    harness.node("project-selector").value = "project-b";
+    harness.node("project-selector").dispatch("change");
+
+    expect(harness.node("summary-project").textContent).toBe("—");
+    expect(allText(harness.node("data-view"))).toContain("Loading project…");
+    expect(harness.node("detail-drawer").hidden).toBe(true);
   });
 
   it("slows hidden polling and defers incoming activity while the operator is scrolled away", async () => {

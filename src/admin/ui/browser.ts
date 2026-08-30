@@ -17,14 +17,15 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
 (() => {
   const byId = (id) => document.getElementById(id);
   const state = {
-    agents: [], failures: 0, generation: 0, pendingActivity: [], pollTimer: null, polling: false,
+    agents: [], failures: 0, filterSignature: "", generation: 0, pendingActivity: [], pollTimer: null, polling: false,
     projectId: null, rows: { activity: [], messages: [], agents: [] },
-    sequences: { activity: 0, messages: 0 }, tab: "activity"
+    ready: false, sequences: { activity: 0, messages: 0 }, tab: "activity"
   };
   const app = byId("app");
   const loginForm = byId("login-form");
   const setText = (id, value) => { const node = byId(id); if (node) node.textContent = String(value); };
-  const setStatus = (connected, detail) => {
+  const setStatus = (connected, detail, context) => {
+    if (context && !current(context)) return;
     const node = byId("connection-status");
     if (node) { node.dataset.state = connected ? "connected" : "disconnected"; node.textContent = detail || (connected ? "Connected" : "Disconnected"); }
   };
@@ -54,8 +55,8 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
     if (after !== undefined) params.set("after", encodeSequenceCursor(after));
     const text = params.toString(); return text ? "?" + text : "";
   };
-  const snapshot = () => ({ generation: state.generation, projectId: state.projectId });
-  const current = (context) => context.generation === state.generation && context.projectId === state.projectId;
+  const snapshot = () => ({ filters: state.filterSignature, generation: state.generation, projectId: state.projectId, tab: state.tab });
+  const current = (context) => context.filters === state.filterSignature && context.generation === state.generation && context.projectId === state.projectId && context.tab === state.tab;
   const projectUrl = (projectId) => "/api/admin/projects/" + encodeURIComponent(projectId);
   const bumpGeneration = () => { state.generation += 1; return snapshot(); };
   const renderSummary = (summary) => {
@@ -74,8 +75,11 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
       filters.append(select("outcome", "Outcome", [{ value: "success", label: "Success" }, { value: "failure", label: "Failure" }]));
     }
     if (state.tab === "messages") filters.append(select("acknowledged", "Acknowledged", [{ value: "true", label: "Acknowledged" }, { value: "false", label: "Unacknowledged" }]));
+    const selected = new URLSearchParams(state.filterSignature);
+    filters.querySelectorAll("select").forEach((field) => { field.value = selected.get(field.name) || ""; });
     filters.querySelectorAll("select").forEach((field) => field.addEventListener("change", () => {
-      state.sequences[state.tab] = 0; bumpGeneration(); loadActive(snapshot()).catch(disconnected);
+      state.filterSignature = filterQuery(); resetContext(false); const context = bumpGeneration();
+      loadProject(context).then(loaded => { if (loaded && current(context)) { state.failures = 0; setStatus(true, "Connected", context); } }).catch(() => disconnected(context));
     }));
   };
   const header = (labels) => {
@@ -85,7 +89,7 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
   };
   const renderRows = () => {
     const dataView = byId("data-view"); clear(dataView); const rows = state.rows[state.tab];
-    if (rows.length === 0) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "No matching records"; dataView.append(empty); return; }
+    if (rows.length === 0) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = state.ready ? "No matching records" : "Loading project…"; dataView.append(empty); return; }
     const table = document.createElement("table"); const head = document.createElement("thead"); const body = document.createElement("tbody");
     if (state.tab === "activity") {
       head.append(header(["Event", "Outcome", "Actor", "When"]));
@@ -111,7 +115,21 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
     });
     if (state.tab === "messages") renderRows();
   };
-  const disconnected = () => { state.failures += 1; setStatus(false, "Disconnected"); };
+  const disconnected = (context) => {
+    if (!current(context)) return;
+    state.failures += 1; setStatus(false, "Disconnected", context);
+  };
+  const resetContext = (projectChanged) => {
+    state.ready = false; state.pendingActivity = []; byId("new-activity").hidden = true;
+    state.sequences = { activity: 0, messages: 0 };
+    if (projectChanged) {
+      state.agents = []; state.rows = { activity: [], messages: [], agents: [] };
+      setText("summary-project", "—"); setText("summary-agents", "—"); setText("summary-messages", "—"); setText("summary-failures", "—");
+      clear(byId("filters"));
+    } else state.rows[state.tab] = [];
+    setText("drawer-title", "Message details"); setText("drawer-text", ""); byId("detail-drawer").hidden = true;
+    renderRows();
+  };
   const updateRows = (tab, rows, replace) => {
     if (tab === "activity" && !replace && window.scrollY > 80) {
       state.pendingActivity = rows.concat(state.pendingActivity); byId("new-activity").hidden = false; return;
@@ -126,37 +144,42 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
       if (!current(context)) return;
       setText("drawer-title", "Message details"); setText("drawer-text", item.text);
       byId("detail-drawer").hidden = false; byId("drawer-close").focus();
-    } catch { if (current(context)) disconnected(); }
+    } catch { disconnected(context); }
   };
   const endpointForTab = (tab) => tab === "activity" ? "events" : tab;
-  const loadActive = async (context) => {
-    if (context.projectId === null) return;
-    const tab = state.tab; const filters = filterQuery();
-    const result = await request(projectUrl(context.projectId) + "/" + endpointForTab(tab) + (filters ? "?" + filters : ""));
-    if (!current(context) || tab !== state.tab) return;
-    updateRows(tab, result.items, true);
-    if (tab === "activity" || tab === "messages") state.sequences[tab] = result.items.reduce((latest, item) => Math.max(latest, item.sequence), 0);
-  };
   const loadProject = async (context) => {
-    if (context.projectId === null) return;
+    if (context.projectId === null) return false;
     const base = projectUrl(context.projectId);
-    const [summary, agents] = await Promise.all([request(base + "/summary"), request(base + "/agents")]);
-    if (!current(context)) return;
+    const [summary, agents, active] = await Promise.all([
+      request(base + "/summary"),
+      request(base + "/agents"),
+      request(base + "/" + endpointForTab(context.tab) + (context.filters ? "?" + context.filters : "")),
+    ]);
+    if (!current(context)) return false;
     renderSummary(summary); state.agents = agents.items; state.rows = { activity: [], messages: [], agents: [] };
-    state.sequences = { activity: 0, messages: 0 }; state.pendingActivity = []; byId("new-activity").hidden = true;
-    renderFilters(); await loadActive(context);
+    state.rows[context.tab] = active.items;
+    state.sequences = {
+      activity: context.tab === "activity" ? active.items.reduce((latest, item) => Math.max(latest, item.sequence), 0) : 0,
+      messages: context.tab === "messages" ? active.items.reduce((latest, item) => Math.max(latest, item.sequence), 0) : 0,
+    };
+    state.pendingActivity = []; byId("new-activity").hidden = true; state.ready = true;
+    renderFilters(); renderRows(); return true;
   };
   const loadProjects = async () => {
     const context = snapshot();
     const projects = await request("/api/admin/projects");
-    if (!current(context)) return;
+    if (!current(context)) return false;
     const selector = byId("project-selector"); clear(selector);
     projects.items.forEach((project) => selector.append(option(project.id, project.name)));
     if (!state.projectId) state.projectId = projects.items[0] ? projects.items[0].id : null;
-    if (state.projectId === null) return;
+    if (state.projectId === null) return false;
     selector.value = state.projectId;
     const projectContext = bumpGeneration();
-    await loadProject(projectContext);
+    try { return await loadProject(projectContext); }
+    catch {
+      disconnected(projectContext);
+      return false;
+    }
   };
   const pollIncremental = async (tab, context, filters) => {
     if (context.projectId === null) return;
@@ -181,24 +204,35 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
   const poll = async () => {
     if (state.polling) return;
     state.polling = true;
+    let context = snapshot();
     try {
-      if (state.projectId === null) await loadProjects();
-      else {
-        const context = snapshot();
+      if (!state.ready) {
+        const loaded = state.projectId === null ? await loadProjects() : await loadProject(context);
+        if (!loaded) return;
+        context = snapshot();
+      } else {
+        context = snapshot();
         const activeFilters = filterQuery();
         if (state.tab === "messages") await Promise.all([pollIncremental("activity", context, ""), pollIncremental("messages", context, activeFilters)]);
         else if (state.tab === "activity") await pollIncremental("activity", context, activeFilters);
       }
-      state.failures = 0; setStatus(true, "Connected");
-    } catch { disconnected(); }
+      if (!current(context) || !state.ready) return;
+      state.failures = 0; setStatus(true, "Connected", context);
+    } catch { disconnected(context); }
     finally {
       state.polling = false;
       schedulePoll(document.hidden ? 15_000 : (state.failures === 0 ? 1_000 : Math.min(15_000, 1_000 * 2 ** (state.failures - 1))));
     }
   };
   const boot = async () => {
-    try { await loadProjects(); state.failures = 0; setStatus(true, "Connected"); schedulePoll(1_000); }
-    catch { disconnected(); schedulePoll(1_000); }
+    const context = snapshot();
+    try {
+      const loaded = await loadProjects();
+      const completed = snapshot();
+      if (!loaded || !current(completed)) return;
+      state.failures = 0; setStatus(true, "Connected", completed);
+    } catch { disconnected(context); }
+    finally { schedulePoll(1_000); }
   };
   if (loginForm) loginForm.addEventListener("submit", async (event) => {
     event.preventDefault(); const error = byId("login-error"); error.textContent = "";
@@ -209,13 +243,15 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
   });
   if (app) {
     byId("project-selector").addEventListener("change", (event) => {
-      state.projectId = event.currentTarget.value; state.pendingActivity = []; byId("new-activity").hidden = true;
-      const context = bumpGeneration(); loadProject(context).catch(disconnected);
+      state.projectId = event.currentTarget.value; state.filterSignature = ""; resetContext(true);
+      const context = bumpGeneration();
+      loadProject(context).then(loaded => { if (loaded && current(context)) { state.failures = 0; setStatus(true, "Connected", context); } }).catch(() => disconnected(context));
     });
     document.querySelectorAll("[role=tab]").forEach((tab) => tab.addEventListener("click", () => {
-      state.tab = tab.dataset.tab; state.sequences[state.tab] = 0; const context = bumpGeneration();
+      state.tab = tab.dataset.tab; state.filterSignature = ""; resetContext(false); const context = bumpGeneration();
       document.querySelectorAll("[role=tab]").forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
-      renderFilters(); loadActive(context).catch(disconnected);
+      renderFilters();
+      loadProject(context).then(loaded => { if (loaded && current(context)) { state.failures = 0; setStatus(true, "Connected", context); } }).catch(() => disconnected(context));
     }));
     byId("logout-button").addEventListener("click", async () => { await fetch("/admin/session", { method: "DELETE", credentials: "same-origin" }); window.location.reload(); });
     byId("drawer-close").addEventListener("click", () => { byId("detail-drawer").hidden = true; });
