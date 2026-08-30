@@ -53,9 +53,7 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
 
   app.get("/health", async () => ({ status: "ok" }));
 
-  if (dependencies.admin !== null) {
-    registerAdminRoutes(app, dependencies.admin);
-  }
+  registerAdminRoutes(app, dependencies.admin);
 
   app.post("/mcp", async (request, reply) => {
     const bearer = bearerFromHeader(request.headers.authorization);

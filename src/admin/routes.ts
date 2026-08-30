@@ -87,7 +87,28 @@ function adminErrorHandler(_error: Error, _request: FastifyRequest, reply: Fasti
   void invalidRequest(reply);
 }
 
-export function registerAdminRoutes(app: FastifyInstance, dependencies: AdminRouteDependencies): void {
+function registerAdminNotFoundHandler(app: FastifyInstance, prefix: string): void {
+  app.register((adminApp, _options, done) => {
+    adminApp.addHook("onRequest", (_request, reply, next) => {
+      reply.header("Cache-Control", noStore);
+      next();
+    });
+    adminApp.setNotFoundHandler((_request, reply) => notFound(reply));
+    done();
+  }, { prefix });
+}
+
+export function registerAdminRoutes(
+  app: FastifyInstance,
+  dependencies: AdminRouteDependencies | null,
+): void {
+  registerAdminNotFoundHandler(app, "/admin");
+  registerAdminNotFoundHandler(app, "/api/admin");
+
+  if (dependencies === null) {
+    return;
+  }
+
   app.addHook("onRequest", (request, reply, done) => {
     if (adminPath(request.url)) {
       reply.header("Cache-Control", noStore);

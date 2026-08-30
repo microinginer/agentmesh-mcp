@@ -214,6 +214,16 @@ describe("authenticated read-only admin HTTP API", () => {
       expect(logout.statusCode).toBe(204);
       expect(logout.headers["set-cookie"]).toContain("Max-Age=0");
       expectNoStore(logout);
+
+      const unsupportedPageMethod = await app.inject({ method: "POST", url: "/admin" });
+      expect(unsupportedPageMethod.statusCode).toBe(404);
+      expect(unsupportedPageMethod.json()).toEqual({ error: "not_found" });
+      expectNoStore(unsupportedPageMethod);
+
+      const unknownAdminPath = await app.inject({ method: "GET", url: "/admin/unknown" });
+      expect(unknownAdminPath.statusCode).toBe(404);
+      expect(unknownAdminPath.json()).toEqual({ error: "not_found" });
+      expectNoStore(unknownAdminPath);
     } finally {
       await app.close();
     }
@@ -296,7 +306,17 @@ describe("authenticated read-only admin HTTP API", () => {
         headers: { cookie },
       });
       expect(nonGet.statusCode).toBe(404);
+      expect(nonGet.json()).toEqual({ error: "not_found" });
       expectNoStore(nonGet);
+
+      const unknownApiPath = await app.inject({
+        method: "GET",
+        url: "/api/admin/unknown",
+        headers: { cookie },
+      });
+      expect(unknownApiPath.statusCode).toBe(404);
+      expect(unknownApiPath.json()).toEqual({ error: "not_found" });
+      expectNoStore(unknownApiPath);
 
       const head = await app.inject({
         method: "HEAD",
@@ -310,7 +330,7 @@ describe("authenticated read-only admin HTTP API", () => {
     }
   });
 
-  it("does not register admin routes without admin configuration", async () => {
+  it("returns safe no-store 404s for all admin surfaces without admin configuration", async () => {
     const app = buildHttpApp({
       db: database.db,
       signingKey,
@@ -321,8 +341,18 @@ describe("authenticated read-only admin HTTP API", () => {
       admin: null,
     } as Parameters<typeof buildHttpApp>[0]);
     try {
-      expect((await app.inject({ method: "GET", url: "/admin" })).statusCode).toBe(404);
-      expect((await app.inject({ method: "GET", url: "/api/admin/projects" })).statusCode).toBe(404);
+      for (const request of [
+        { method: "GET" as const, url: "/admin" },
+        { method: "POST" as const, url: "/admin/session" },
+        { method: "GET" as const, url: "/api/admin/projects" },
+        { method: "POST" as const, url: "/api/admin/projects" },
+        { method: "GET" as const, url: "/api/admin/unknown" },
+      ]) {
+        const response = await app.inject(request);
+        expect(response.statusCode).toBe(404);
+        expect(response.json()).toEqual({ error: "not_found" });
+        expectNoStore(response);
+      }
     } finally {
       await app.close();
     }
