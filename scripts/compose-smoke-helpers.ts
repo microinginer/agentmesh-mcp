@@ -11,16 +11,31 @@ function safeError(message: string): Error {
   return new Error(message);
 }
 
-function cancelBody(body: ReadableStream<Uint8Array> | null): void {
-  void body?.cancel().catch(() => {
-    // The only safe outcome is the caller's constant rejection.
-  });
+function waitForAbort(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
 }
 
-function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
-  void reader.cancel().catch(() => {
+async function cancelBody(body: ReadableStream<Uint8Array> | null, signal?: AbortSignal): Promise<void> {
+  if (body === null) return;
+  try {
+    const cancellation = body.cancel();
+    if (signal === undefined || signal.aborted) {
+      void cancellation.catch(() => {});
+      return;
+    }
+    await Promise.race([cancellation, waitForAbort(signal)]);
+  } catch {
     // The only safe outcome is the caller's constant rejection.
-  });
+  }
+}
+
+async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  try {
+    await reader.cancel();
+  } catch {
+    // The only safe outcome is the caller's constant rejection.
+  }
 }
 
 export function assertSecretFree(value: unknown, secrets: readonly string[]): void {
@@ -35,48 +50,85 @@ export function assertSecretFree(value: unknown, secrets: readonly string[]): vo
   }
 }
 
+function readScope(timeoutOrSignal: number | AbortSignal): { signal: AbortSignal; dispose: () => void } {
+  if (typeof timeoutOrSignal !== "number") {
+    return { signal: timeoutOrSignal, dispose: () => {} };
+  }
+  if (!Number.isSafeInteger(timeoutOrSignal) || timeoutOrSignal < 1) {
+    throw safeError(SAFE_RESPONSE_ERROR);
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutOrSignal);
+  return { signal: controller.signal, dispose: () => clearTimeout(timeout) };
+}
+
+type StreamReadResult = Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>;
+
+function readWithSignal(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<StreamReadResult> {
+  if (signal.aborted) return Promise.reject(safeError(SAFE_RESPONSE_ERROR));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(safeError(SAFE_RESPONSE_ERROR));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void reader.read().then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(result);
+      },
+      () => {
+        signal.removeEventListener("abort", onAbort);
+        reject(safeError(SAFE_RESPONSE_ERROR));
+      },
+    );
+  });
+}
+
 export async function readBoundedText(
   response: Response,
   maxBytes = SMOKE_RESPONSE_LIMIT_BYTES,
-  timeoutMs = SMOKE_REQUEST_TIMEOUT_MS,
+  timeoutOrSignal: number | AbortSignal = SMOKE_REQUEST_TIMEOUT_MS,
 ): Promise<string> {
   const contentLength = response.headers.get("content-length");
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw safeError(SAFE_RESPONSE_ERROR);
   }
+  const scope = readScope(timeoutOrSignal);
   if (contentLength !== null) {
     const declaredLength = Number(contentLength);
     if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
-      cancelBody(response.body);
+      await cancelBody(response.body, scope.signal);
+      scope.dispose();
       throw safeError(SAFE_RESPONSE_ERROR);
     }
   }
-  if (response.body === null) return "";
+  if (response.body === null) {
+    scope.dispose();
+    return "";
+  }
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  const aborted = new Promise<never>((_resolve, reject) => {
-    controller.signal.addEventListener("abort", () => reject(safeError(SAFE_RESPONSE_ERROR)), { once: true });
-  });
   try {
     while (true) {
-      const { done, value } = await Promise.race([reader.read(), aborted]);
+      const { done, value } = await readWithSignal(reader, scope.signal);
       if (done) break;
       totalBytes += value.byteLength;
       if (totalBytes > maxBytes) {
-        cancelReader(reader);
         throw safeError(SAFE_RESPONSE_ERROR);
       }
       chunks.push(value);
     }
   } catch {
-    cancelReader(reader);
+    await cancelReader(reader);
     throw safeError(SAFE_RESPONSE_ERROR);
   } finally {
-    clearTimeout(timeout);
+    scope.dispose();
     reader.releaseLock();
   }
 
@@ -89,12 +141,7 @@ export async function readBoundedText(
   return new TextDecoder().decode(combined);
 }
 
-export async function readBoundedJson(
-  response: Response,
-  maxBytes = SMOKE_RESPONSE_LIMIT_BYTES,
-  timeoutMs = SMOKE_REQUEST_TIMEOUT_MS,
-): Promise<Record<string, unknown>> {
-  const body = await readBoundedText(response, maxBytes, timeoutMs);
+function parseJson(body: string): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -107,31 +154,56 @@ export async function readBoundedJson(
   return parsed as Record<string, unknown>;
 }
 
+export async function readBoundedJson(
+  response: Response,
+  maxBytes = SMOKE_RESPONSE_LIMIT_BYTES,
+  timeoutOrSignal: number | AbortSignal = SMOKE_REQUEST_TIMEOUT_MS,
+): Promise<Record<string, unknown>> {
+  return parseJson(await readBoundedText(response, maxBytes, timeoutOrSignal));
+}
+
 export async function readSecretFreeJson(
   response: Response,
   secrets: readonly string[],
+  timeoutOrSignal: number | AbortSignal = SMOKE_REQUEST_TIMEOUT_MS,
 ): Promise<Record<string, unknown>> {
-  const payload = await readBoundedJson(response);
-  assertSecretFree(payload, secrets);
-  return payload;
+  const body = await readBoundedText(response, SMOKE_RESPONSE_LIMIT_BYTES, timeoutOrSignal);
+  assertSecretFree(body, secrets);
+  return parseJson(body);
 }
 
-export async function fetchWithTimeout(
+function isSafeFailure(error: unknown): boolean {
+  return error instanceof Error && [SAFE_HTTP_ERROR, SAFE_RESPONSE_ERROR, SAFE_SECRET_ERROR].includes(error.message);
+}
+
+export async function withBoundedResponse<T>(
   input: Parameters<typeof fetch>[0],
   init: RequestInit,
+  consume: (response: Response, signal: AbortSignal) => Promise<T>,
   timeoutMs = SMOKE_REQUEST_TIMEOUT_MS,
   fetchImpl: typeof fetch = fetch,
-): Promise<Response> {
+): Promise<T> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw safeError(SAFE_HTTP_ERROR);
   }
   const controller = new AbortController();
+  const callerSignal = init.signal;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal?.aborted) controller.abort();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response | undefined;
   try {
-    return await fetchImpl(input, { ...init, signal: controller.signal });
-  } catch {
+    response = await fetchImpl(input, { ...init, signal: controller.signal });
+    return await consume(response, controller.signal);
+  } catch (error) {
+    if (isSafeFailure(error)) throw error;
     throw safeError(SAFE_HTTP_ERROR);
   } finally {
+    if (response?.body !== null && response?.bodyUsed === false) {
+      await cancelBody(response.body, controller.signal);
+    }
     clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
 }

@@ -5,9 +5,9 @@ import {
   SAFE_RESPONSE_ERROR,
   SAFE_SECRET_ERROR,
   assertSecretFree,
-  fetchWithTimeout,
   readBoundedJson,
   readSecretFreeJson,
+  withBoundedResponse,
 } from "../scripts/compose-smoke-helpers.js";
 
 const plantedSecret = "planted-smoke-secret-value";
@@ -27,6 +27,14 @@ describe("Compose smoke helper boundaries", () => {
       JSON.stringify({
         items: [{ id: "event-1", event_type: "message.sent", metadata: { token: plantedSecret }, unexpected: plantedSecret }],
       }),
+    );
+
+    await expect(readSecretFreeJson(response, [plantedSecret])).rejects.toThrow(SAFE_SECRET_ERROR);
+  });
+
+  it("scans duplicate-key raw JSON before parsing can overwrite the planted secret", async () => {
+    const response = new Response(
+      '{"items":[{"metadata":{"token":"planted-smoke-secret-value"},"metadata":{"safe":true}}]}',
     );
 
     await expect(readSecretFreeJson(response, [plantedSecret])).rejects.toThrow(SAFE_SECRET_ERROR);
@@ -82,7 +90,61 @@ describe("Compose smoke helper boundaries", () => {
         }, { once: true });
       });
 
-    await expect(fetchWithTimeout("http://127.0.0.1/never", {}, 10, hangingFetch)).rejects.toThrow(SAFE_HTTP_ERROR);
+    await expect(
+      withBoundedResponse("http://127.0.0.1/never", {}, async (response) => response.status, 10, hangingFetch),
+    ).rejects.toThrow(SAFE_HTTP_ERROR);
     expect(aborted).toBe(true);
   });
+
+  it("keeps the request timeout active from headers through a hanging response body", async () => {
+    let cancelled = false;
+    const headersThenHangingBody: typeof fetch = async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    }));
+
+    await expect(
+      withBoundedResponse(
+        "http://127.0.0.1/hanging-body",
+        {},
+        (response, signal) => readBoundedJson(response, 8, signal),
+        10,
+        headersThenHangingBody,
+      ),
+    ).rejects.toThrow(SAFE_RESPONSE_ERROR);
+    expect(cancelled).toBe(true);
+  });
+
+  it("cancels a status-only response body before its lifecycle completes", async () => {
+    let cancelled = false;
+    const statusOnlyFetch: typeof fetch = async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    }), { status: 200 });
+
+    await expect(
+      withBoundedResponse("http://127.0.0.1/status-only", {}, async (response) => response.status, 100, statusOnlyFetch),
+    ).resolves.toBe(200);
+    expect(cancelled).toBe(true);
+  });
+
+  it("propagates a caller abort signal into the bounded request lifecycle", async () => {
+    const caller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const pendingFetch: typeof fetch = async (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        receivedSignal = init?.signal ?? undefined;
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+
+    const pending = withBoundedResponse("http://127.0.0.1/caller-abort", { signal: caller.signal }, async () => 204, 100, pendingFetch);
+    caller.abort();
+
+    await expect(pending).rejects.toThrow(SAFE_HTTP_ERROR);
+    expect(receivedSignal).toBeDefined();
+    expect(receivedSignal?.aborted).toBe(true);
+  });
+
 });

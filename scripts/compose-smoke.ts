@@ -10,8 +10,8 @@ import type { CallToolResult } from "@modelcontextprotocol/server";
 import {
   SAFE_HTTP_ERROR,
   assertSecretFree,
-  fetchWithTimeout,
   readSecretFreeJson,
+  withBoundedResponse,
 } from "./compose-smoke-helpers.js";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -61,8 +61,8 @@ async function compose(...args: string[]): Promise<string> {
 async function waitForHealth(): Promise<void> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
-      const response = await fetchWithTimeout(new URL("/health", endpoint), {}, 1_000);
-      if (response.ok) {
+      const healthy = await withBoundedResponse(new URL("/health", endpoint), {}, async (response) => response.ok, 1_000);
+      if (healthy) {
         return;
       }
     } catch {
@@ -116,30 +116,30 @@ function items(value: unknown, description: string): Record<string, unknown>[] {
 }
 
 async function adminLogin(): Promise<string> {
-  const response = await fetchWithTimeout(
+  return withBoundedResponse(
     new URL("/admin/session", endpoint),
     {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token: smokeAdminToken }),
     },
+    async (response) => {
+      if (response.status !== 204) throw new Error(SAFE_HTTP_ERROR);
+      const setCookie = response.headers.get("set-cookie");
+      if (setCookie === null) throw new Error(SAFE_HTTP_ERROR);
+      const cookie = setCookie.split(";", 1)[0];
+      if (cookie === undefined || !cookie.includes("=")) throw new Error(SAFE_HTTP_ERROR);
+      return cookie;
+    },
   );
-  if (response.status !== 204) throw new Error(SAFE_HTTP_ERROR);
-  const setCookie = response.headers.get("set-cookie");
-  if (setCookie === null) throw new Error(SAFE_HTTP_ERROR);
-  const cookie = (setCookie as string).split(";", 1)[0];
-  if (cookie === undefined || !cookie.includes("=")) throw new Error(SAFE_HTTP_ERROR);
-  return cookie;
 }
 
 async function adminGet(path: string, cookie: string, secrets: readonly string[]): Promise<Record<string, unknown>> {
   if (!path.startsWith("/api/admin/")) throw new Error(SAFE_HTTP_ERROR);
-  const response = await fetchWithTimeout(new URL(path, endpoint), { headers: { cookie } });
-  if (response.status !== 200) {
-    void response.body?.cancel().catch(() => {});
-    throw new Error(SAFE_HTTP_ERROR);
-  }
-  return readSecretFreeJson(response, secrets);
+  return withBoundedResponse(new URL(path, endpoint), { headers: { cookie } }, async (response, signal) => {
+    if (response.status !== 200) throw new Error(SAFE_HTTP_ERROR);
+    return readSecretFreeJson(response, secrets, signal);
+  });
 }
 
 function decodeProjects(value: Record<string, unknown>): AdminState["projects"] {
@@ -494,10 +494,10 @@ async function main(): Promise<{
     await finalB.close();
   }
 
-  const health = await fetchWithTimeout(new URL("/health", endpoint), {});
-  if (health.status !== 200) throw new Error(SAFE_HTTP_ERROR);
-  const adminPage = await fetchWithTimeout(new URL("/admin", endpoint), {});
-  if (adminPage.status !== 200) throw new Error(SAFE_HTTP_ERROR);
+  const healthStatus = await withBoundedResponse(new URL("/health", endpoint), {}, async (response) => response.status);
+  if (healthStatus !== 200) throw new Error(SAFE_HTTP_ERROR);
+  const adminPageStatus = await withBoundedResponse(new URL("/admin", endpoint), {}, async (response) => response.status);
+  if (adminPageStatus !== 200) throw new Error(SAFE_HTTP_ERROR);
 
   const postRestartCookie = await adminLogin();
   const postRestartState = await readAdminState(projectId, postRestartCookie, secrets);
