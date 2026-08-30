@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   SAFE_HTTP_ERROR,
@@ -38,6 +38,12 @@ describe("Compose smoke helper boundaries", () => {
     );
 
     await expect(readSecretFreeJson(response, [plantedSecret])).rejects.toThrow(SAFE_SECRET_ERROR);
+  });
+
+  it("scans parsed JSON after raw text so Unicode escapes cannot hide credential markers", async () => {
+    const response = new Response('{"items":[{"\\u0061gent_token":"\\u0061m_proj_hidden"}]}');
+
+    await expect(readSecretFreeJson(response, [])).rejects.toThrow(SAFE_SECRET_ERROR);
   });
 
   it("keeps raw JSON and raw log secrecy failures constant and redacted", async () => {
@@ -128,6 +134,29 @@ describe("Compose smoke helper boundaries", () => {
       withBoundedResponse("http://127.0.0.1/status-only", {}, async (response) => response.status, 100, statusOnlyFetch),
     ).resolves.toBe(200);
     expect(cancelled).toBe(true);
+  });
+
+  it("does not wait for a status-only cancellation promise that never settles", async () => {
+    let cancelled = false;
+    const caller = new AbortController();
+    const removeAbortListener = vi.spyOn(caller.signal, "removeEventListener");
+    const neverSettlingCancelFetch: typeof fetch = async () => new Response(new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+        return new Promise<void>(() => {});
+      },
+    }));
+
+    const lifecycle = withBoundedResponse(
+      "http://127.0.0.1/never-settling-cancel",
+      { signal: caller.signal },
+      async (response) => response.status,
+      1_000,
+      neverSettlingCancelFetch,
+    );
+    await expect(Promise.race([lifecycle, new Promise<number>((_resolve, reject) => setTimeout(() => reject(new Error("too slow")), 25))])).resolves.toBe(200);
+    expect(cancelled).toBe(true);
+    expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function));
   });
 
   it("propagates a caller abort signal into the bounded request lifecycle", async () => {

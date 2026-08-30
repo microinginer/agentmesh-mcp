@@ -11,28 +11,18 @@ function safeError(message: string): Error {
   return new Error(message);
 }
 
-function waitForAbort(signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  return new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-}
-
-async function cancelBody(body: ReadableStream<Uint8Array> | null, signal?: AbortSignal): Promise<void> {
+function cancelBody(body: ReadableStream<Uint8Array> | null): void {
   if (body === null) return;
   try {
-    const cancellation = body.cancel();
-    if (signal === undefined || signal.aborted) {
-      void cancellation.catch(() => {});
-      return;
-    }
-    await Promise.race([cancellation, waitForAbort(signal)]);
+    void body.cancel().catch(() => {});
   } catch {
     // The only safe outcome is the caller's constant rejection.
   }
 }
 
-async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
   try {
-    await reader.cancel();
+    void reader.cancel().catch(() => {});
   } catch {
     // The only safe outcome is the caller's constant rejection.
   }
@@ -101,7 +91,7 @@ export async function readBoundedText(
   if (contentLength !== null) {
     const declaredLength = Number(contentLength);
     if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
-      await cancelBody(response.body, scope.signal);
+      cancelBody(response.body);
       scope.dispose();
       throw safeError(SAFE_RESPONSE_ERROR);
     }
@@ -125,7 +115,7 @@ export async function readBoundedText(
       chunks.push(value);
     }
   } catch {
-    await cancelReader(reader);
+    cancelReader(reader);
     throw safeError(SAFE_RESPONSE_ERROR);
   } finally {
     scope.dispose();
@@ -169,7 +159,9 @@ export async function readSecretFreeJson(
 ): Promise<Record<string, unknown>> {
   const body = await readBoundedText(response, SMOKE_RESPONSE_LIMIT_BYTES, timeoutOrSignal);
   assertSecretFree(body, secrets);
-  return parseJson(body);
+  const payload = parseJson(body);
+  assertSecretFree(payload, secrets);
+  return payload;
 }
 
 function isSafeFailure(error: unknown): boolean {
@@ -201,7 +193,7 @@ export async function withBoundedResponse<T>(
     throw safeError(SAFE_HTTP_ERROR);
   } finally {
     if (response?.body !== null && response?.bodyUsed === false) {
-      await cancelBody(response.body, controller.signal);
+      cancelBody(response.body);
     }
     clearTimeout(timeout);
     callerSignal?.removeEventListener("abort", abortFromCaller);
