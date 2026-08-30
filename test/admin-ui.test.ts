@@ -19,6 +19,12 @@ describe("local admin dashboard page", () => {
     expect(page.body).toContain('data-tab="messages"');
     expect(page.body).toContain('data-tab="agents"');
     expect(page.body).toContain('id="summary"');
+    expect(page.body).toContain('id="summary-agents-online"');
+    expect(page.body).toContain('id="summary-agents-idle"');
+    expect(page.body).toContain('id="summary-agents-offline"');
+    expect(page.body).toContain('id="summary-agents-total"');
+    expect(page.body).toContain('id="summary-messages-total"');
+    expect(page.body).toContain('id="summary-messages-unacknowledged"');
     expect(page.body).toContain('id="filters"');
     expect(page.body).toContain('id="data-view"');
     expect(page.body).toContain('id="detail-drawer"');
@@ -137,12 +143,12 @@ function failure(status = 503): FetchReply {
 
 function dashboardReply(projectId: string) {
   return {
-    agents: { items: [] },
+    agents: { items: [], next_cursor: null },
     events: { has_more: false, items: [] },
     messages: { has_more: false, items: [] },
-    projects: { items: [{ id: projectId, name: projectId }] },
+    projects: { items: [{ id: projectId, name: projectId }], next_cursor: null },
     summary: {
-      agents: { online: 0, total: 0 },
+      agents: { idle: 0, offline: 0, online: 0, total: 0 },
       failures_last_24h: 0,
       messages: { total: 0, unacknowledged: 0 },
       project: { id: projectId, name: projectId },
@@ -186,7 +192,7 @@ function createControllerHarness(handler: FetchHandler, login = false) {
   });
   for (const id of login
     ? ["login-form", "login-token", "login-error"]
-    : ["project-selector", "connection-status", "summary-project", "summary-agents", "summary-messages", "summary-failures", "filters", "data-view", "detail-drawer", "drawer-title", "drawer-text", "drawer-close", "logout-button", "new-activity"]) make(id);
+    : ["project-selector", "connection-status", "summary-project", "summary-agents-online", "summary-agents-idle", "summary-agents-offline", "summary-agents-total", "summary-messages-total", "summary-messages-unacknowledged", "summary-failures", "filters", "data-view", "detail-drawer", "drawer-title", "drawer-text", "drawer-close", "logout-button", "new-activity"]) make(id);
   const documentListeners = new Map<string, Array<() => void>>();
   let hidden = false;
   const document = {
@@ -234,6 +240,230 @@ function createControllerHarness(handler: FetchHandler, login = false) {
 }
 
 describe("dashboard browser controller", () => {
+  it("drains every opaque project and agent page with an explicit maximum page size", async () => {
+    const projects = Array.from({ length: 101 }, (_, index) => ({ id: `project-${index + 1}`, name: `Project ${index + 1}` }));
+    const agents = Array.from({ length: 101 }, (_, index) => ({
+      capabilities: ["plan", `cap-${index + 1}`],
+      client: "codex",
+      created_at: "2026-08-30T10:00:00.000Z",
+      id: `agent-${index + 1}`,
+      last_seen_at: "2026-08-31T00:00:00.000Z",
+      name: `Agent ${index + 1}`,
+      status: "online",
+    }));
+    const base = dashboardReply(projects[0]!.id);
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") {
+        return request.searchParams.has("cursor")
+          ? success({ items: projects.slice(100), next_cursor: null })
+          : success({ items: projects.slice(0, 100), next_cursor: "projects-page-2" });
+      }
+      if (request.pathname.endsWith("/summary")) return success(base.summary);
+      if (request.pathname.endsWith("/agents")) {
+        return request.searchParams.has("cursor")
+          ? success({ items: agents.slice(100), next_cursor: null })
+          : success({ items: agents.slice(0, 100), next_cursor: "agents-page-2" });
+      }
+      return success(base.events);
+    });
+
+    await harness.settle();
+    expect(harness.node("project-selector").children).toHaveLength(101);
+    expect(harness.node("filters").querySelectorAll("select")[0]?.children).toHaveLength(102);
+    expect(harness.calls.filter((call) => call.url.includes("limit=100"))).toHaveLength(4);
+
+    harness.tab("agents").dispatch("click");
+    await harness.settle();
+    expect(allText(harness.node("data-view"))).toContain("Agent 101");
+    expect(allText(harness.node("data-view"))).toContain("plan, cap-101");
+    expect(allText(harness.node("data-view"))).toContain("Registered");
+  });
+
+  it("stops stale project pagination before it can overwrite the current context", async () => {
+    const secondPage = deferred<FetchReply>();
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") {
+        return request.searchParams.has("cursor")
+          ? secondPage.promise
+          : success({ items: [{ id: "project-a", name: "Project A" }], next_cursor: "page-2" });
+      }
+      return success(dashboardReply("project-a").events);
+    });
+
+    await harness.settle();
+    harness.tab("agents").dispatch("click");
+    secondPage.resolve(success({ items: [{ id: "stale-project", name: "Stale" }], next_cursor: null }));
+    await harness.settle();
+
+    expect(harness.node("project-selector").children).toHaveLength(0);
+  });
+
+  it.each(["repeated cursor", "empty progress"])("disconnects on invalid project pagination: %s", async (failureMode) => {
+    let requests = 0;
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname !== "/api/admin/projects") return success(dashboardReply("project-a").events);
+      requests += 1;
+      if (requests === 1) return success({ items: [{ id: "project-a", name: "Project A" }], next_cursor: "stalled" });
+      return failureMode === "repeated cursor"
+        ? success({ items: [{ id: "project-b", name: "Project B" }], next_cursor: "stalled" })
+        : success({ items: [], next_cursor: "different-but-not-progress" });
+    });
+
+    await harness.settle();
+
+    expect(requests).toBe(2);
+    expect(harness.node("connection-status").textContent).toBe("Disconnected");
+    expect(harness.node("project-selector").children).toHaveLength(0);
+  });
+
+  it("refreshes summary and complete agent presence while Agents is active", async () => {
+    const base = dashboardReply("project-a");
+    let refresh = false;
+    const onlineAgent = { capabilities: ["plan"], client: "codex", created_at: "2026-08-30T10:00:00.000Z", id: "agent-a", last_seen_at: "2026-08-31T00:00:00.000Z", name: "Agent A", status: "online" };
+    const idleAgent = { ...onlineAgent, last_seen_at: "2026-08-30T23:50:00.000Z", status: "idle" };
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success(base.projects);
+      if (request.pathname.endsWith("/summary")) return success({ ...base.summary, agents: refresh ? { idle: 1, offline: 0, online: 0, total: 1 } : { idle: 0, offline: 0, online: 1, total: 1 } });
+      if (request.pathname.endsWith("/agents")) return success({ items: [refresh ? idleAgent : onlineAgent], next_cursor: null });
+      return success(base.events);
+    });
+
+    await harness.settle();
+    harness.tab("agents").dispatch("click");
+    await harness.settle();
+    refresh = true;
+    await harness.runTimer();
+
+    expect(harness.node("summary-agents-online").textContent).toBe("0");
+    expect(harness.node("summary-agents-idle").textContent).toBe("1");
+    expect(allText(harness.node("data-view"))).toContain("idle");
+  });
+
+  it("marks an Agents-tab polling outage disconnected and preserves the old rows", async () => {
+    const base = dashboardReply("project-a");
+    const agent = { capabilities: ["plan"], client: "codex", created_at: "2026-08-30T10:00:00.000Z", id: "agent-a", last_seen_at: "2026-08-31T00:00:00.000Z", name: "Old Agent", status: "online" };
+    let outage = false;
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success(base.projects);
+      if (request.pathname.endsWith("/summary")) return outage ? failure() : success(base.summary);
+      if (request.pathname.endsWith("/agents")) return success({ items: [agent], next_cursor: null });
+      return success(base.events);
+    });
+
+    await harness.settle();
+    harness.tab("agents").dispatch("click");
+    await harness.settle();
+    outage = true;
+    await harness.runTimer();
+
+    expect(harness.node("connection-status").textContent).toBe("Disconnected");
+    expect(allText(harness.node("data-view"))).toContain("Old Agent");
+  });
+
+  it("does not let successful stale agent pagination overwrite the new project", async () => {
+    const projectA = dashboardReply("project-a");
+    const projectB = dashboardReply("project-b");
+    const stalePage = deferred<FetchReply>();
+    let aAgentRequests = 0;
+    const agentA = { capabilities: ["old"], client: "codex", created_at: "2026-08-30T10:00:00.000Z", id: "agent-a", last_seen_at: "2026-08-31T00:00:00.000Z", name: "Agent A", status: "online" };
+    const agentB = { ...agentA, capabilities: ["current"], id: "agent-b", name: "Agent B" };
+    const staleAgent = { ...agentA, id: "agent-stale", name: "Stale Agent" };
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "Project A" }, { id: "project-b", name: "Project B" }], next_cursor: null });
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return success(projectA.summary);
+      if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) {
+        aAgentRequests += 1;
+        if (aAgentRequests === 1) return success({ items: [agentA], next_cursor: null });
+        return request.searchParams.has("cursor") ? stalePage.promise : success({ items: [agentA], next_cursor: "stale-page" });
+      }
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/summary")) return success(projectB.summary);
+      if (request.pathname.includes("project-b") && request.pathname.endsWith("/agents")) return success({ items: [agentB], next_cursor: null });
+      return success({ has_more: false, items: [] });
+    });
+
+    await harness.settle();
+    harness.tab("agents").dispatch("click");
+    await harness.settle();
+    await harness.runTimer();
+    harness.node("project-selector").value = "project-b";
+    harness.node("project-selector").dispatch("change");
+    await harness.settle();
+    stalePage.resolve(success({ items: [staleAgent], next_cursor: null }));
+    await harness.settle();
+
+    expect(harness.node("summary-project").textContent).toBe("project-b");
+    expect(allText(harness.node("data-view"))).toContain("Agent B");
+    expect(allText(harness.node("data-view"))).not.toContain("Stale Agent");
+  });
+
+  it("renders every summary field and opens a text-only safe event detail drawer", async () => {
+    const base = dashboardReply("project-a");
+    base.summary.agents = { idle: 2, offline: 3, online: 1, total: 6 };
+    base.summary.messages = { total: 8, unacknowledged: 4 };
+    base.summary.failures_last_24h = 5;
+    const event = { actor: { id: "agent-a", name: "<Actor>" }, created_at: "2026-08-31T00:00:00.000Z", error_code: "invalid_request", event_type: "message.send_failed", id: "event-a", message_id: null, metadata: { operation: "<script>alert(1)</script>" }, outcome: "failure", request_id: "request-a", secret: "must-not-render", sequence: 12, target: null };
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success(base.projects);
+      if (request.pathname.endsWith("/summary")) return success(base.summary);
+      if (request.pathname.endsWith("/agents")) return success(base.agents);
+      return success({ has_more: false, items: [event] });
+    });
+
+    await harness.settle();
+    expect([
+      harness.node("summary-agents-online").textContent,
+      harness.node("summary-agents-idle").textContent,
+      harness.node("summary-agents-offline").textContent,
+      harness.node("summary-agents-total").textContent,
+      harness.node("summary-messages-total").textContent,
+      harness.node("summary-messages-unacknowledged").textContent,
+      harness.node("summary-failures").textContent,
+    ]).toEqual(["1", "2", "3", "6", "8", "4", "5"]);
+    const eventButton = harness.node("data-view").children[0]?.children[1]?.children[0]?.children[0]?.children[0];
+    eventButton?.dispatch("click");
+    expect(harness.node("drawer-title").textContent).toBe("Event details");
+    expect(harness.node("drawer-text").textContent).toContain('"error_code": "invalid_request"');
+    expect(harness.node("drawer-text").textContent).toContain("<script>alert(1)</script>");
+    expect(harness.node("drawer-text").textContent).not.toContain("must-not-render");
+    expect(harness.node("detail-drawer").hidden).toBe(false);
+  });
+
+  it("prepends multi-row activity and message batches newest first", async () => {
+    const base = dashboardReply("project-a");
+    const initialEvent = { actor: null, created_at: "2026-08-31T00:00:00.000Z", event_type: "event-10", id: "event-10", outcome: "success", sequence: 10 };
+    const initialMessage = { acknowledged_at: null, created_at: "2026-08-31T00:00:00.000Z", id: "message-10", preview: "message-10", recipient: { name: "recipient" }, sender: { name: "sender" }, sequence: 10 };
+    const harness = createControllerHarness(async (url) => {
+      const request = new URL(url, "http://localhost");
+      if (request.pathname === "/api/admin/projects") return success(base.projects);
+      if (request.pathname.endsWith("/summary")) return success(base.summary);
+      if (request.pathname.endsWith("/agents")) return success(base.agents);
+      if (request.pathname.endsWith("/messages")) return request.searchParams.has("after")
+        ? success({ has_more: false, items: [{ ...initialMessage, id: "message-11", preview: "message-11", sequence: 11 }, { ...initialMessage, id: "message-12", preview: "message-12", sequence: 12 }] })
+        : success({ has_more: false, items: [initialMessage] });
+      return request.searchParams.has("after")
+        ? success({ has_more: false, items: [{ ...initialEvent, event_type: "event-11", id: "event-11", sequence: 11 }, { ...initialEvent, event_type: "event-12", id: "event-12", sequence: 12 }] })
+        : success({ has_more: false, items: [initialEvent] });
+    });
+
+    await harness.settle();
+    await harness.runTimer();
+    const activityText = allText(harness.node("data-view"));
+    expect(activityText.indexOf("event-12")).toBeLessThan(activityText.indexOf("event-11"));
+
+    harness.tab("messages").dispatch("click");
+    await harness.settle();
+    await harness.runTimer();
+    const messageText = allText(harness.node("data-view"));
+    expect(messageText.indexOf("message-12")).toBeLessThan(messageText.indexOf("message-11"));
+  });
+
   it("encodes opaque cursors and commits the newest sequence only after draining incremental pages", async () => {
     const base = dashboardReply("project-a");
     const after: string[] = [];
@@ -288,8 +518,8 @@ describe("dashboard browser controller", () => {
         attempts += 1;
         return attempts === 1 ? failure() : success(base.projects);
       }
-      if (url.endsWith("/summary")) return success(base.summary);
-      if (url.endsWith("/agents")) return success(base.agents);
+      if (new URL(url, "http://localhost").pathname.endsWith("/summary")) return success(base.summary);
+      if (new URL(url, "http://localhost").pathname.endsWith("/agents")) return success(base.agents);
       return success(base.events);
     });
 
@@ -335,7 +565,7 @@ describe("dashboard browser controller", () => {
     const agentsA = deferred<FetchReply>();
     const harness = createControllerHarness(async (url) => {
       const request = new URL(url, "http://localhost");
-      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }] });
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }], next_cursor: null });
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return summaryA.promise;
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) return agentsA.promise;
       if (request.pathname.includes("project-b") && request.pathname.endsWith("/summary")) return success(projectB.summary);
@@ -360,7 +590,7 @@ describe("dashboard browser controller", () => {
     const agentsA = deferred<FetchReply>();
     const harness = createControllerHarness(async (url) => {
       const request = new URL(url, "http://localhost");
-      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }] });
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }], next_cursor: null });
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return summaryA.promise;
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) return agentsA.promise;
       if (request.pathname.includes("project-b") && request.pathname.endsWith("/summary")) return success(projectB.summary);
@@ -387,7 +617,7 @@ describe("dashboard browser controller", () => {
     let activityRequests = 0;
     const harness = createControllerHarness(async (url) => {
       const request = new URL(url, "http://localhost");
-      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }] });
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }], next_cursor: null });
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return success(projectA.summary);
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) return success(projectA.agents);
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/events")) {
@@ -445,7 +675,7 @@ describe("dashboard browser controller", () => {
     const agentsB = deferred<FetchReply>();
     const harness = createControllerHarness(async (url) => {
       const request = new URL(url, "http://localhost");
-      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }] });
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }], next_cursor: null });
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return success(projectA.summary);
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) return success(projectA.agents);
       if (request.pathname.includes("project-a")) return success({ has_more: false, items: [{ actor: null, created_at: "2026-08-31T00:00:00.000Z", event_type: "agent.synced", id: "event-a", outcome: "success", sequence: 12 }] });
@@ -498,7 +728,7 @@ describe("dashboard browser controller", () => {
     let bEvents = 0;
     const harness = createControllerHarness(async (url) => {
       const request = new URL(url, "http://localhost");
-      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }] });
+      if (request.pathname === "/api/admin/projects") return success({ items: [{ id: "project-a", name: "project-a" }, { id: "project-b", name: "project-b" }], next_cursor: null });
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/summary")) return success(projectA.summary);
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/agents")) return success(projectA.agents);
       if (request.pathname.includes("project-a") && request.pathname.endsWith("/events")) {

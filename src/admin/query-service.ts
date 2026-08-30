@@ -139,17 +139,27 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
     if (project === undefined) return { found: false as const };
 
     const now = clock();
-    const [projectAgents, projectMessages, failures] = await Promise.all([
+    const onlineThreshold = new Date(now.getTime() - ONLINE_WINDOW_MS);
+    const idleThreshold = new Date(now.getTime() - IDLE_WINDOW_MS);
+    const [[agentCounts], [messageCounts], [failureCounts]] = await Promise.all([
       db
-        .select({ last_seen_at: agents.lastSeenAt })
+        .select({
+          online: sql<number>`count(*) filter (where ${agents.lastSeenAt} >= ${onlineThreshold})::integer`,
+          idle: sql<number>`count(*) filter (where ${agents.lastSeenAt} < ${onlineThreshold} and ${agents.lastSeenAt} >= ${idleThreshold})::integer`,
+          offline: sql<number>`count(*) filter (where ${agents.lastSeenAt} < ${idleThreshold})::integer`,
+          total: sql<number>`count(*)::integer`,
+        })
         .from(agents)
         .where(eq(agents.projectId, projectId)),
       db
-        .select({ acknowledged_at: messages.acknowledgedAt })
+        .select({
+          total: sql<number>`count(*)::integer`,
+          unacknowledged: sql<number>`count(*) filter (where ${messages.acknowledgedAt} is null)::integer`,
+        })
         .from(messages)
         .where(eq(messages.projectId, projectId)),
       db
-        .select({ id: activityEvents.id })
+        .select({ total: sql<number>`count(*)::integer` })
         .from(activityEvents)
         .where(
           and(
@@ -159,20 +169,14 @@ export function createAdminQueryService(dependencies: AdminQueryServiceDependenc
           ),
         ),
     ]);
-    const presence = { online: 0, idle: 0, offline: 0, total: projectAgents.length };
-    for (const agent of projectAgents) presence[presenceAt(agent.last_seen_at, now)] += 1;
 
     return {
       found: true as const,
       data: {
         project,
-        agents: presence,
-        messages: {
-          total: projectMessages.length,
-          unacknowledged: projectMessages.filter((message) => message.acknowledged_at === null)
-            .length,
-        },
-        failures_last_24h: failures.length,
+        agents: agentCounts ?? { online: 0, idle: 0, offline: 0, total: 0 },
+        messages: messageCounts ?? { total: 0, unacknowledged: 0 },
+        failures_last_24h: failureCounts?.total ?? 0,
       },
     };
   }

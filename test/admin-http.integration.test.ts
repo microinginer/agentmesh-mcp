@@ -208,6 +208,12 @@ describe("authenticated read-only admin HTTP API", () => {
       });
       expect(authenticatedPage.statusCode).toBe(200);
       expect(authenticatedPage.body).toContain('id="app"');
+      expect(authenticatedPage.body).toContain('id="summary-agents-online"');
+      expect(authenticatedPage.body).toContain('id="summary-agents-idle"');
+      expect(authenticatedPage.body).toContain('id="summary-agents-offline"');
+      expect(authenticatedPage.body).toContain('id="summary-agents-total"');
+      expect(authenticatedPage.body).toContain('id="summary-messages-total"');
+      expect(authenticatedPage.body).toContain('id="summary-messages-unacknowledged"');
       expectNoStore(authenticatedPage);
 
       const logout = await app.inject({

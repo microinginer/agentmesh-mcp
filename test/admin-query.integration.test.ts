@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { drizzle } from "drizzle-orm/node-postgres";
 
 import {
   adminListQuerySchema,
@@ -13,6 +14,7 @@ import { createAdminQueryService } from "../src/admin/query-service.js";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import { activityEvents, agents, messages, projects } from "../src/db/schema.js";
+import * as schema from "../src/db/schema.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
@@ -219,6 +221,38 @@ describe("admin query contracts", () => {
 });
 
 describe("project-scoped admin read models", () => {
+  it("computes the exact summary with bounded PostgreSQL aggregates", async () => {
+    const fixture = await seedFixture();
+    const statements: string[] = [];
+    const aggregateService = createAdminQueryService({
+      clock: () => now,
+      db: drizzle({
+        client: database.pool,
+        logger: { logQuery(query) { statements.push(query); } },
+        schema,
+      }),
+    });
+
+    const summary = await aggregateService.getSummary(fixture.projectA);
+
+    expect(summary).toEqual({
+      found: true,
+      data: {
+        project: expect.objectContaining({ id: fixture.projectA, name: "alpha" }),
+        agents: { online: 1, idle: 1, offline: 1, total: 3 },
+        messages: { total: 3, unacknowledged: 2 },
+        failures_last_24h: 1,
+      },
+    });
+    const aggregateStatements = statements.filter((statement) =>
+      statement.includes('from "agents"') || statement.includes('from "messages"') || statement.includes('from "activity_events"'),
+    );
+    expect(aggregateStatements).toHaveLength(3);
+    expect(aggregateStatements.every((statement) => /count\(\*\)/i.test(statement))).toBe(true);
+    expect(aggregateStatements.find((statement) => statement.includes('from "agents"'))).toMatch(/filter\s*\(where/i);
+    expect(aggregateStatements.find((statement) => statement.includes('from "messages"'))).toMatch(/filter\s*\(where/i);
+  });
+
   it("keeps project rows isolated and returns bounded public DTOs", async () => {
     const fixture = await seedFixture();
 
