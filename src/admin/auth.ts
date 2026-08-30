@@ -62,6 +62,9 @@ export function parseAdminCookie(cookieHeader: string | undefined): string | nul
   for (const entry of cookieHeader.split(";")) {
     const separator = entry.indexOf("=");
     if (separator < 1) {
+      if (entry.trim() === ADMIN_SESSION_COOKIE_NAME) {
+        return null;
+      }
       continue;
     }
     if (entry.slice(0, separator).trim() !== ADMIN_SESSION_COOKIE_NAME) {
@@ -118,9 +121,9 @@ export function createAdminAuth(config: AdminAuthConfig): AdminAuth {
         return false;
       }
 
-      const receivedSignature = Buffer.from(signatureText, "base64url");
       const payload = `${SESSION_VERSION}.${expiresAtText}.${nonce}`;
-      return equalDigest(receivedSignature, sessionSignature(config.sessionSigningKey, payload));
+      const expectedSignature = sessionSignature(config.sessionSigningKey, payload).toString("base64url");
+      return equalDigest(Buffer.from(signatureText, "utf8"), Buffer.from(expectedSignature, "utf8"));
     },
   };
 }

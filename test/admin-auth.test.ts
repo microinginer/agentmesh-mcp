@@ -62,8 +62,17 @@ describe("local admin authentication", () => {
     expect(auth.verifySession("v1.not-a-time.nonce.signature")).toBe(false);
     expect(auth.verifySession(sign(now.getTime()))).toBe(false);
     expect(auth.verifySession(sign(now.getTime() + ADMIN_SESSION_TTL_MS + 1))).toBe(false);
-    const mutatedSignature = session.value.endsWith("A") ? "B" : "A";
-    expect(auth.verifySession(`${session.value.slice(0, -1)}${mutatedSignature}`)).toBe(false);
+    const base64urlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const signature = session.value.split(".").at(-1);
+    expect(signature).toBeDefined();
+    const signatureIndex = base64urlAlphabet.indexOf(signature?.at(-1) ?? "");
+    const equivalentNonCanonicalLastCharacter = base64urlAlphabet[signatureIndex ^ 1];
+    const nonCanonicalSession = `${session.value.slice(0, -1)}${equivalentNonCanonicalLastCharacter}`;
+
+    expect(Buffer.from(nonCanonicalSession.split(".").at(-1) ?? "", "base64url")).toEqual(
+      Buffer.from(signature ?? "", "base64url"),
+    );
+    expect(auth.verifySession(nonCanonicalSession)).toBe(false);
   });
 
   it("parses one well-formed session cookie and creates secure cookie attributes when requested", () => {
@@ -72,6 +81,7 @@ describe("local admin authentication", () => {
     expect(parseAdminCookie(`theme=dark; ${ADMIN_SESSION_COOKIE_NAME}=${value}`)).toBe(value);
     expect(parseAdminCookie(`${ADMIN_SESSION_COOKIE_NAME}=one; ${ADMIN_SESSION_COOKIE_NAME}=two`)).toBeNull();
     expect(parseAdminCookie(`${ADMIN_SESSION_COOKIE_NAME}=`)).toBeNull();
+    expect(parseAdminCookie(`${ADMIN_SESSION_COOKIE_NAME}; ${ADMIN_SESSION_COOKIE_NAME}=${value}`)).toBeNull();
     expect(createSessionCookie(value, true)).toContain("Secure");
     expect(clearSessionCookie(true)).toContain("Max-Age=0");
     expect(clearSessionCookie(true)).toContain("Secure");
