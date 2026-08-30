@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { ActivityMetadata } from "../activity/types.js";
+import type { AuditMetadata } from "../audit/types.js";
 import {
   bigserial,
   check,
@@ -20,11 +21,61 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => "bytea",
 });
 
-export const projects = pgTable("projects", {
+export const projectStatuses = ["active", "archived"] as const;
+
+export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
-  name: varchar("name", { length: 100 }).notNull(),
+  displayName: varchar("display_name", { length: 100 }).notNull(),
+  avatarUrl: text("avatar_url"),
+  blockedAt: timestamp("blocked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const oauthIdentities = pgTable("oauth_identities", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  provider: varchar("provider", { length: 32 }).notNull(),
+  providerUserId: varchar("provider_user_id", { length: 64 }).notNull(),
+  login: varchar("login", { length: 100 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  lastLoginAt: timestamp("last_login_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [unique("oauth_identities_provider_user_unique").on(table.provider, table.providerUserId)]);
+
+export const webSessions = pgTable("web_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenDigest: bytea("token_digest").notNull().unique(),
+  csrfDigest: bytea("csrf_digest").notNull(),
+  authenticatedAt: timestamp("authenticated_at", { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull(),
+  idleExpiresAt: timestamp("idle_expires_at", { withTimezone: true }).notNull(),
+  absoluteExpiresAt: timestamp("absolute_expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const projects = pgTable("projects", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+  name: varchar("name", { length: 100 }).notNull(),
+  description: text("description"),
+  status: varchar("status", { length: 16 }).notNull().default("active"),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  createIdempotencyKey: uuid("create_idempotency_key"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  check(
+    "projects_status_check",
+    sql`${table.status} IN ('active', 'archived')`,
+  ),
+  unique("projects_owner_create_idempotency_unique").on(
+    table.ownerUserId,
+    table.createIdempotencyKey,
+  ),
+]);
 
 export const projectTokens = pgTable("project_tokens", {
   id: uuid("id").primaryKey(),
@@ -32,8 +83,22 @@ export const projectTokens = pgTable("project_tokens", {
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
   tokenDigest: bytea("token_digest").notNull(),
+  label: varchar("label", { length: 80 }).notNull().default("Legacy CLI token"),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createIdempotencyKey: uuid("create_idempotency_key"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [
+  unique("project_tokens_project_id_id_unique").on(table.projectId, table.id),
+  unique("project_tokens_project_create_idempotency_unique").on(
+    table.projectId,
+    table.createIdempotencyKey,
+  ),
+]);
 
 export const agents = pgTable(
   "agents",
@@ -42,6 +107,7 @@ export const agents = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    registeredViaTokenId: uuid("registered_via_token_id"),
     registrationDigest: bytea("registration_digest").notNull(),
     name: varchar("name", { length: 64 }).notNull(),
     client: varchar("client", { length: 64 }).notNull(),
@@ -58,6 +124,39 @@ export const agents = pgTable(
       table.registrationDigest,
     ),
     unique("agents_id_project_unique").on(table.id, table.projectId),
+    foreignKey({
+      name: "agents_registered_via_token_project_fk",
+      columns: [table.registeredViaTokenId, table.projectId],
+      foreignColumns: [projectTokens.id, projectTokens.projectId],
+    }),
+  ],
+);
+
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    projectId: uuid("project_id"),
+    eventType: varchar("event_type", { length: 64 }).notNull(),
+    metadata: jsonb("metadata")
+      .$type<AuditMetadata>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      "audit_events_type_check",
+      sql`${table.eventType} IN (
+        'auth.login_succeeded', 'auth.login_failed', 'auth.logout',
+        'project.created', 'project.archived', 'project.restored', 'project.deleted',
+        'connection.created', 'connection.revoked',
+        'operator.user_blocked', 'operator.user_unblocked', 'operator.project_archived'
+      )`,
+    ),
+    index("audit_events_user_created_at_idx").on(table.userId, table.createdAt.desc()),
+    index("audit_events_project_created_at_idx").on(table.projectId, table.createdAt.desc()),
   ],
 );
 
@@ -222,7 +321,49 @@ export const observerActivityEvents = observer.view("activity_events").as((query
     .from(activityEvents),
 );
 
+export const observerUsers = observer.view("users").as((query) =>
+  query
+    .select({
+      id: users.id,
+      displayName: users.displayName,
+      avatarUrl: users.avatarUrl,
+      blockedAt: users.blockedAt,
+      createdAt: users.createdAt,
+      updatedAt: users.updatedAt,
+    })
+    .from(users),
+);
+
+export const observerConnections = observer.view("connections").as((query) =>
+  query
+    .select({
+      id: projectTokens.id,
+      projectId: projectTokens.projectId,
+      label: projectTokens.label,
+      createdByUserId: projectTokens.createdByUserId,
+      expiresAt: projectTokens.expiresAt,
+      lastUsedAt: projectTokens.lastUsedAt,
+      revokedAt: projectTokens.revokedAt,
+      createdAt: projectTokens.createdAt,
+    })
+    .from(projectTokens),
+);
+
+export const observerAuditEvents = observer.view("audit_events").as((query) =>
+  query
+    .select({
+      id: auditEvents.id,
+      userId: auditEvents.userId,
+      projectId: auditEvents.projectId,
+      eventType: auditEvents.eventType,
+      metadata: auditEvents.metadata,
+      createdAt: auditEvents.createdAt,
+    })
+    .from(auditEvents),
+);
+
 export type Project = typeof projects.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type ActivityEvent = typeof activityEvents.$inferSelect;
+export type AuditEvent = typeof auditEvents.$inferSelect;

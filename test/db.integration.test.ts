@@ -4,7 +4,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { agents, messages, projects } from "../src/db/schema.js";
+import { agents, messages, projects, projectTokens } from "../src/db/schema.js";
+import { resetDatabase } from "./support/database.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
@@ -14,12 +15,11 @@ const database = createDatabase(databaseUrl);
 
 beforeAll(async () => {
   await migrateDatabase(database.db);
+  await migrateDatabase(database.db);
 });
 
 beforeEach(async () => {
-  await database.pool.query(
-    "TRUNCATE TABLE activity_events, messages, agents, project_tokens, projects RESTART IDENTITY CASCADE",
-  );
+  await resetDatabase(database.pool);
 });
 
 afterAll(async () => {
@@ -27,21 +27,25 @@ afterAll(async () => {
 });
 
 describe("PostgreSQL tenant invariants", () => {
-  it("migrates an empty database to the five-table journal schema", async () => {
+  it("migrates an empty database to the hosted control-plane journal schema", async () => {
     const result = await database.pool.query<{ table_name: string }>(
       `SELECT table_name
          FROM information_schema.tables
         WHERE table_schema = 'public'
-          AND table_name IN ('projects', 'project_tokens', 'agents', 'messages', 'activity_events')
+          AND table_name IN ('users', 'oauth_identities', 'web_sessions', 'audit_events', 'projects', 'project_tokens', 'agents', 'messages', 'activity_events')
         ORDER BY table_name`,
     );
 
     expect(result.rows.map((row) => row.table_name)).toEqual([
       "activity_events",
       "agents",
+      "audit_events",
       "messages",
+      "oauth_identities",
       "project_tokens",
       "projects",
+      "users",
+      "web_sessions",
     ]);
   });
 
@@ -84,6 +88,41 @@ describe("PostgreSQL tenant invariants", () => {
         capabilities: [],
       }),
     ).resolves.toBeDefined();
+  });
+
+  it("permits agent provenance only from a token in the same project", async () => {
+    const projectA = randomUUID();
+    const projectB = randomUUID();
+    const tokenId = randomUUID();
+    await database.db.insert(projects).values([
+      { id: projectA, name: "alpha" },
+      { id: projectB, name: "beta" },
+    ]);
+    await database.db.insert(projectTokens).values({
+      id: tokenId,
+      projectId: projectA,
+      tokenDigest: Buffer.alloc(32, 9),
+    });
+
+    await expect(database.db.insert(agents).values({
+      id: randomUUID(),
+      projectId: projectA,
+      registeredViaTokenId: tokenId,
+      registrationDigest: Buffer.alloc(32, 10),
+      name: "same-project",
+      client: "codex",
+      capabilities: [],
+    })).resolves.toBeDefined();
+
+    await expect(database.db.insert(agents).values({
+      id: randomUUID(),
+      projectId: projectB,
+      registeredViaTokenId: tokenId,
+      registrationDigest: Buffer.alloc(32, 11),
+      name: "cross-project",
+      client: "codex",
+      capabilities: [],
+    })).rejects.toThrow();
   });
 
   it("enforces send idempotency per project and sender", async () => {

@@ -9,6 +9,7 @@ import { migrateDatabase } from "../src/db/migrate.js";
 import { activityEvents, agents, messages, projects } from "../src/db/schema.js";
 import { buildHttpApp } from "../src/http.js";
 import { createProjectService } from "../src/projects/service.js";
+import { resetDatabase } from "./support/database.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
@@ -31,9 +32,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await database.pool.query(
-    "TRUNCATE TABLE activity_events, messages, agents, project_tokens, projects RESTART IDENTITY CASCADE",
-  );
+  await resetDatabase(database.pool);
 });
 
 afterAll(async () => {

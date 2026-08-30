@@ -131,7 +131,7 @@ describe("pgAdmin observer database boundary", () => {
     }
   });
 
-  it("exposes exactly four views with only the approved columns", async () => {
+  it("exposes exactly seven safe views without digests or session rows", async () => {
     const views = await database.pool.query<{ table_name: string }>(
       `SELECT table_name
          FROM information_schema.views
@@ -141,8 +141,11 @@ describe("pgAdmin observer database boundary", () => {
     expect(views.rows.map((row) => row.table_name)).toEqual([
       "activity_events",
       "agents",
+      "audit_events",
+      "connections",
       "messages",
       "projects",
+      "users",
     ]);
 
     const columns = await database.pool.query<{
@@ -194,9 +197,37 @@ describe("pgAdmin observer database boundary", () => {
       "metadata",
       "created_at",
     ]);
+    expect(byView.audit_events?.map((row) => row.column_name)).toEqual([
+      "id",
+      "user_id",
+      "project_id",
+      "event_type",
+      "metadata",
+      "created_at",
+    ]);
+    expect(byView.connections?.map((row) => row.column_name)).toEqual([
+      "id",
+      "project_id",
+      "label",
+      "created_by_user_id",
+      "expires_at",
+      "last_used_at",
+      "revoked_at",
+      "created_at",
+    ]);
+    expect(byView.users?.map((row) => row.column_name)).toEqual([
+      "id",
+      "display_name",
+      "avatar_url",
+      "blocked_at",
+      "created_at",
+      "updated_at",
+    ]);
     expect(byView.project_tokens).toBeUndefined();
     expect(columns.rows.map((row) => row.column_name)).not.toContain("registration_digest");
     expect(columns.rows.map((row) => row.column_name)).not.toContain("idempotency_key");
+    expect(columns.rows.map((row) => row.column_name)).not.toContain("token_digest");
+    expect(columns.rows.map((row) => row.column_name)).not.toContain("csrf_digest");
   });
 
   it("keeps PUBLIC out of the observer schema and views", async () => {
@@ -330,7 +361,9 @@ describe("pgAdmin observer database boundary", () => {
     const connection = observerPool();
     const client = await connection.connect();
     try {
-      for (const view of ["projects", "agents", "messages", "activity_events"]) {
+      for (const view of [
+        "projects", "agents", "messages", "activity_events", "users", "connections", "audit_events",
+      ]) {
         await expect(client.query(`SELECT * FROM observer.${view} LIMIT 1`)).resolves.toBeDefined();
       }
       for (const table of [
@@ -339,6 +372,10 @@ describe("pgAdmin observer database boundary", () => {
         "agents",
         "messages",
         "activity_events",
+        "users",
+        "oauth_identities",
+        "web_sessions",
+        "audit_events",
       ]) {
         await expectSqlState(client, `SELECT * FROM public.${table} LIMIT 1`);
       }
@@ -581,7 +618,7 @@ describe("pgAdmin observer database boundary", () => {
         WHERE grantee = $1
           AND NOT (
             table_schema = 'observer'
-            AND table_name IN ('projects', 'agents', 'messages', 'activity_events')
+            AND table_name IN ('projects', 'agents', 'messages', 'activity_events', 'users', 'connections', 'audit_events')
             AND privilege_type = 'SELECT'
           )`,
       [roleName],

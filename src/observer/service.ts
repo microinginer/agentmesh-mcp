@@ -198,7 +198,7 @@ export async function ensureObserverRole(
         );
         EXECUTE format('GRANT USAGE ON SCHEMA observer TO %I', '${roleName}');
         EXECUTE format(
-          'GRANT SELECT ON observer.projects, observer.agents, observer.messages, observer.activity_events TO %I',
+          'GRANT SELECT ON observer.projects, observer.agents, observer.messages, observer.activity_events, observer.users, observer.connections, observer.audit_events TO %I',
           '${roleName}'
         );
       END
