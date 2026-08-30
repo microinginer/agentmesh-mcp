@@ -10,13 +10,17 @@ import type { CallToolResult } from "@modelcontextprotocol/server";
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const composeProject = process.env.AGENTMESH_SMOKE_PROJECT ?? "agentmesh-mvp-smoke";
 const port = Number(process.env.AGENTMESH_SMOKE_PORT ?? "31337");
+const smokeAdminToken = Buffer.alloc(32, 11).toString("base64url");
 
 assert.match(composeProject, /^[a-z0-9][a-z0-9_-]*$/);
+assert.match(composeProject, /(?:^|[-_])smoke(?:[-_]|$)/, "Smoke project name must contain 'smoke'");
 assert(Number.isInteger(port) && port >= 1 && port <= 65_535, "Invalid smoke-test port");
 
 const childEnvironment = {
   ...process.env,
   AGENTMESH_PORT: String(port),
+  AGENTMESH_ADMIN_TOKEN: smokeAdminToken,
+  AGENTMESH_ADMIN_COOKIE_SECURE: "0",
 };
 const endpoint = new URL(`http://127.0.0.1:${port}/mcp`);
 
@@ -64,6 +68,177 @@ async function waitForHealth(): Promise<void> {
   throw new Error("AgentMesh did not become healthy after restart");
 }
 
+type AdminSummary = {
+  project: { id: string };
+  messages: { total: number; unacknowledged: number };
+};
+
+type AdminMessages = {
+  items: Array<{ id: string; acknowledged_at: string | null }>;
+};
+
+type AdminEvents = {
+  items: Array<{ id: string; event_type: string; outcome: string; error_code: string | null }>;
+};
+
+type AdminState = {
+  projects: { items: Array<{ id: string }> };
+  summary: AdminSummary;
+  messages: AdminMessages;
+  events: AdminEvents;
+};
+
+function record(value: unknown, description: string): Record<string, unknown> {
+  assert.equal(typeof value, "object", `${description} must be an object`);
+  assert.notEqual(value, null, `${description} must be an object`);
+  assert.equal(Array.isArray(value), false, `${description} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function string(value: unknown, description: string): string {
+  assert.equal(typeof value, "string", `${description} must be a string`);
+  return value as string;
+}
+
+function number(value: unknown, description: string): number {
+  assert.equal(typeof value, "number", `${description} must be a number`);
+  return value as number;
+}
+
+function items(value: unknown, description: string): Record<string, unknown>[] {
+  assert.equal(Array.isArray(value), true, `${description} must be an array`);
+  return (value as unknown[]).map((item, index) => record(item, `${description}[${index}]`));
+}
+
+async function boundedJson(response: Response, description: string): Promise<Record<string, unknown>> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const parsed = Number(contentLength);
+    assert(Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 256 * 1024, `${description} is too large`);
+  }
+  const body = await response.text();
+  assert(body.length <= 256 * 1024, `${description} is too large`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new Error(`${description} is not valid JSON`);
+  }
+  return record(parsed, description);
+}
+
+async function adminLogin(): Promise<string> {
+  const response = await fetch(new URL("/admin/session", endpoint), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: smokeAdminToken }),
+  });
+  assert.equal(response.status, 204, "Smoke admin login must succeed");
+  const setCookie = response.headers.get("set-cookie");
+  assert.notEqual(setCookie, null, "Smoke admin login must set a cookie");
+  const cookie = (setCookie as string).split(";", 1)[0];
+  assert(cookie !== undefined && cookie.includes("="), "Smoke admin login returned an invalid cookie");
+  return cookie;
+}
+
+async function adminGet(path: string, cookie: string): Promise<Record<string, unknown>> {
+  assert.match(path, /^\/api\/admin\//, "Smoke admin requests must target the admin API");
+  const response = await fetch(new URL(path, endpoint), {
+    headers: { cookie },
+  });
+  assert.equal(response.status, 200, `Admin API ${path} must return 200`);
+  return boundedJson(response, `Admin API ${path}`);
+}
+
+function decodeProjects(value: Record<string, unknown>): AdminState["projects"] {
+  return {
+    items: items(value.items, "Admin projects.items").map((project) => ({
+      id: string(project.id, "Admin project.id"),
+    })),
+  };
+}
+
+function decodeSummary(value: Record<string, unknown>): AdminSummary {
+  const project = record(value.project, "Admin summary.project");
+  const messages = record(value.messages, "Admin summary.messages");
+  return {
+    project: { id: string(project.id, "Admin summary.project.id") },
+    messages: {
+      total: number(messages.total, "Admin summary.messages.total"),
+      unacknowledged: number(messages.unacknowledged, "Admin summary.messages.unacknowledged"),
+    },
+  };
+}
+
+function decodeMessages(value: Record<string, unknown>): AdminMessages {
+  return {
+    items: items(value.items, "Admin messages.items").map((message) => ({
+      id: string(message.id, "Admin message.id"),
+      acknowledged_at:
+        message.acknowledged_at === null
+          ? null
+          : string(message.acknowledged_at, "Admin message.acknowledged_at"),
+    })),
+  };
+}
+
+function decodeEvents(value: Record<string, unknown>): AdminEvents {
+  return {
+    items: items(value.items, "Admin events.items").map((event) => ({
+      id: string(event.id, "Admin event.id"),
+      event_type: string(event.event_type, "Admin event.event_type"),
+      outcome: string(event.outcome, "Admin event.outcome"),
+      error_code: event.error_code === null ? null : string(event.error_code, "Admin event.error_code"),
+    })),
+  };
+}
+
+async function readAdminState(projectId: string, cookie: string): Promise<AdminState> {
+  const [projects, summary, messages, events] = await Promise.all([
+    adminGet("/api/admin/projects", cookie),
+    adminGet(`/api/admin/projects/${projectId}/summary`, cookie),
+    adminGet(`/api/admin/projects/${projectId}/messages`, cookie),
+    adminGet(`/api/admin/projects/${projectId}/events`, cookie),
+  ]);
+  return {
+    projects: decodeProjects(projects),
+    summary: decodeSummary(summary),
+    messages: decodeMessages(messages),
+    events: decodeEvents(events),
+  };
+}
+
+function assertSecretFree(value: unknown, secrets: readonly string[]): void {
+  const rendered = JSON.stringify(value);
+  assert.doesNotMatch(rendered, /am_(?:proj|agent)_[A-Za-z0-9_-]+|authorization/i);
+  for (const secret of secrets) {
+    assert.equal(rendered.includes(secret), false, "Smoke data must not contain credentials");
+  }
+}
+
+function assertAdminState(
+  state: AdminState,
+  expected: { projectId: string; messageIds: readonly string[] },
+  secrets: readonly string[],
+): void {
+  assert.equal(state.projects.items.some((project) => project.id === expected.projectId), true);
+  assert.equal(state.summary.project.id, expected.projectId);
+  assert.equal(state.summary.messages.total, 2);
+  assert.equal(state.summary.messages.unacknowledged, 0);
+  assert.deepEqual(state.messages.items.map((message) => message.id).toSorted(), [...expected.messageIds].toSorted());
+  assert.equal(state.messages.items.every((message) => message.acknowledged_at !== null), true);
+  assert.equal(state.events.items.some((event) => event.event_type === "message.sent"), true);
+  assert.equal(state.events.items.some((event) => event.event_type === "message.send_failed"), true);
+  assert.equal(state.events.items.some((event) => event.event_type === "message.acknowledged"), true);
+  assert.equal(
+    state.events.items.some(
+      (event) => event.event_type === "message.send_failed" && event.outcome === "failure" && event.error_code === "TARGET_AGENT_INVALID",
+    ),
+    true,
+  );
+  assertSecretFree(state, secrets);
+}
+
 function structured<T>(result: CallToolResult): T {
   assert.notEqual(result.isError, true, "MCP tool returned an error result");
   assert(result.structuredContent !== undefined, "MCP result has no structured content");
@@ -81,7 +256,15 @@ async function connectClient(name: string, projectToken: string): Promise<Client
   return client;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<{
+  messages: number;
+  unacknowledged: number;
+  acknowledged: number;
+  activity: { sent: number; send_failed: number; acknowledged: number };
+}> {
+  await compose("down", "--volumes", "--remove-orphans");
+  await compose("up", "--build", "--force-recreate", "-d", "--wait");
+
   const provisionedOutput = await compose(
     "exec",
     "-T",
@@ -159,6 +342,24 @@ async function main(): Promise<void> {
       }),
     );
     outboundMessageId = sent.data.message.id;
+
+    const selfSend = await firstA.callTool({
+      name: "agentmesh_send",
+      arguments: {
+        agent_token: agentA.token,
+        to_agent_id: agentA.id,
+        text: "This message must not be sent",
+        idempotency_key: randomUUID(),
+      },
+    });
+    assert.equal(selfSend.isError, true);
+    const selfSendPayload = selfSend.structuredContent as {
+      ok?: unknown;
+      error?: { code?: unknown; message?: unknown };
+    };
+    assert.equal(selfSendPayload.ok, false);
+    assert.equal(selfSendPayload.error?.code, "TARGET_AGENT_INVALID");
+    assert.equal(selfSendPayload.error?.message, "Target agent is unavailable");
 
     const delivered = structured<{
       ok: true;
@@ -273,6 +474,11 @@ async function main(): Promise<void> {
     await secondB.close();
   }
 
+  const preRestartCookie = await adminLogin();
+  const preRestartState = await readAdminState(projectId, preRestartCookie);
+  const secrets = [smokeAdminToken, projectToken, agentA.token, agentB.token];
+  assertAdminState(preRestartState, { projectId, messageIds: [outboundMessageId, replyMessageId] }, secrets);
+
   await compose("restart", "agentmesh");
   await waitForHealth();
 
@@ -304,22 +510,59 @@ async function main(): Promise<void> {
     await finalB.close();
   }
 
-  process.stdout.write(
-    `${JSON.stringify({
-      ok: true,
-      project_id: projectId,
-      agent_ids: [agentA.id, agentB.id],
-      persisted_message_id: outboundMessageId,
-      reply_message_id: replyMessageId,
-      restart_count: 2,
-    })}\n`,
-  );
+  const health = await fetch(new URL("/health", endpoint));
+  assert.equal(health.status, 200, "Smoke health endpoint must return 200 after restart");
+  const adminPage = await fetch(new URL("/admin", endpoint));
+  assert.equal(adminPage.status, 200, "Smoke admin page must return 200 after restart");
+
+  const postRestartCookie = await adminLogin();
+  const postRestartState = await readAdminState(projectId, postRestartCookie);
+  assertAdminState(postRestartState, { projectId, messageIds: [outboundMessageId, replyMessageId] }, secrets);
+  assert.deepEqual(postRestartState, preRestartState, "Admin state must survive the final restart");
+
+  const logs = await compose("logs", "--no-color", "--tail", "200", "agentmesh");
+  assertSecretFree(logs, secrets);
+
+  const eventCount = (eventType: string) =>
+    postRestartState.events.items.filter((event) => event.event_type === eventType).length;
+  return {
+    messages: postRestartState.summary.messages.total,
+    unacknowledged: postRestartState.summary.messages.unacknowledged,
+    acknowledged: postRestartState.messages.items.filter((message) => message.acknowledged_at !== null).length,
+    activity: {
+      sent: eventCount("message.sent"),
+      send_failed: eventCount("message.send_failed"),
+      acknowledged: eventCount("message.acknowledged"),
+    },
+  };
+}
+
+let result:
+  | {
+      messages: number;
+      unacknowledged: number;
+      acknowledged: number;
+      activity: { sent: number; send_failed: number; acknowledged: number };
+    }
+  | undefined;
+let failure: unknown;
+try {
+  result = await main();
+} catch (error) {
+  failure = error;
 }
 
 try {
-  await main();
-} catch (error) {
-  const message = error instanceof Error ? error.message : "Unknown smoke-test failure";
+  await compose("down", "--volumes", "--remove-orphans");
+} catch {
+  failure ??= new Error("Smoke Compose cleanup failed");
+}
+
+if (failure !== undefined) {
+  const message = failure instanceof Error ? failure.message : "Unknown smoke-test failure";
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
+} else {
+  assert(result !== undefined);
+  process.stdout.write(`${JSON.stringify({ ok: true, restarts: 2, ...result })}\n`);
 }
