@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   createMcpHandler,
   McpServer,
@@ -5,6 +7,7 @@ import {
   type McpHttpHandler,
 } from "@modelcontextprotocol/server";
 
+import { createActivityService } from "../activity/service.js";
 import { createAgentService } from "../agents/service.js";
 import {
   listAgentsInputSchema,
@@ -53,7 +56,8 @@ async function runTool(operation: () => Promise<Record<string, unknown>>): Promi
 }
 
 export function buildMcpHandler({ db, signingKey }: McpHandlerDependencies): McpHttpHandler {
-  const agentService = createAgentService({ db, signingKey });
+  const activity = createActivityService({ db });
+  const agentService = createAgentService({ db, signingKey, activity });
   const messageService = createMessageService({ db, agentService });
 
   return createMcpHandler(({ authInfo }) => {
@@ -75,16 +79,18 @@ export function buildMcpHandler({ db, signingKey }: McpHandlerDependencies): Mcp
         inputSchema: syncInputSchema,
         outputSchema: syncOutputSchema,
       },
-      async (input) =>
-        runTool(async () => {
+      async (input) => {
+        const context = { requestId: randomUUID() };
+        return runTool(async () => {
           if (input.mode === "register") {
-            const registered = await agentService.registerAgent(requireProjectId(), input);
+            const registered = await agentService.registerAgent(requireProjectId(), input, context);
             return { ok: true, data: { mode: "registered", ...registered } };
           }
 
-          const synced = await agentService.syncAgent(requireProjectId(), input);
+          const synced = await agentService.syncAgent(requireProjectId(), input, context);
           return { ok: true, data: { mode: "synced", ...synced } };
-        }),
+        });
+      },
     );
 
     server.registerTool(

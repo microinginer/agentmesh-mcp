@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 
+import { eq } from "drizzle-orm";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
+import { activityEvents } from "../src/db/schema.js";
 import { buildHttpApp } from "../src/http.js";
 import { createProjectService } from "../src/projects/service.js";
 
@@ -22,7 +24,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await database.pool.query(
-    "TRUNCATE TABLE messages, agents, project_tokens, projects RESTART IDENTITY CASCADE",
+    "TRUNCATE TABLE activity_events, messages, agents, project_tokens, projects RESTART IDENTITY CASCADE",
   );
 });
 
@@ -128,6 +130,8 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
           },
         }),
       );
+      expect(Object.keys(registeredA.data).toSorted()).toEqual(["agent", "agent_token", "mode"]);
+      expect(Object.keys(registeredB.data).toSorted()).toEqual(["agent", "agent_token", "mode"]);
 
       const discovered = structured<{
         ok: true;
@@ -269,6 +273,45 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
         }),
       );
       expect(afterReplyAck.data).toMatchObject({ acknowledged: 1, messages: [] });
+      expect(Object.keys(afterReplyAck.data).toSorted()).toEqual([
+        "acknowledged",
+        "agent",
+        "has_more",
+        "messages",
+        "mode",
+      ]);
+
+      const recordedEvents = await database.db
+        .select({
+          requestId: activityEvents.requestId,
+          eventType: activityEvents.eventType,
+          outcome: activityEvents.outcome,
+          messageId: activityEvents.messageId,
+        })
+        .from(activityEvents)
+        .where(eq(activityEvents.projectId, project.project.id));
+      expect(recordedEvents.filter((event) => event.eventType === "agent.registered")).toHaveLength(2);
+      expect(
+        recordedEvents.filter(
+          (event) => event.eventType === "agent.synced" && event.outcome === "success",
+        ),
+      ).toHaveLength(5);
+      const acknowledgements = recordedEvents.filter(
+        (event) => event.eventType === "message.acknowledged",
+      );
+      expect(acknowledgements).toHaveLength(2);
+      expect(acknowledgements).toEqual(expect.arrayContaining([
+        expect.objectContaining({ messageId: sent.data.message.id }),
+        expect.objectContaining({ messageId: reply.data.message.id }),
+      ]));
+      for (const acknowledgement of acknowledgements) {
+        expect(
+          recordedEvents.some(
+            (event) =>
+              event.eventType === "agent.synced" && event.requestId === acknowledgement.requestId,
+          ),
+        ).toBe(true);
+      }
     } finally {
       await clientA.close();
       await clientB.close();

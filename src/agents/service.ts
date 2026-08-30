@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 
+import type { ActivityService } from "../activity/service.js";
+import type { OperationContext } from "../activity/types.js";
 import {
   deriveAgentToken,
   digestRegistrationId,
@@ -36,6 +38,7 @@ export interface InboxMessage {
 interface AgentServiceDependencies {
   db: AgentMeshDatabase;
   signingKey: Buffer;
+  activity: Pick<ActivityService, "record" | "recordBestEffort">;
   clock?: () => Date;
 }
 
@@ -72,7 +75,7 @@ function sameProfile(agent: Agent, input: RegisterInput, capabilities: string[])
 }
 
 export function createAgentService(dependencies: AgentServiceDependencies) {
-  const { db, signingKey } = dependencies;
+  const { db, signingKey, activity } = dependencies;
   const clock = dependencies.clock ?? (() => new Date());
 
   async function authenticateAgent(
@@ -106,140 +109,218 @@ export function createAgentService(dependencies: AgentServiceDependencies) {
     return agent;
   }
 
-  async function registerAgent(projectId: string, input: RegisterInput) {
+  async function registerAgent(
+    projectId: string,
+    input: RegisterInput,
+    context: OperationContext,
+  ) {
     const now = clock();
     const registrationDigest = digestRegistrationId(projectId, input.session_instance_id);
     const capabilities = input.capabilities.toSorted();
 
-    const agent = await db.transaction(async (transaction) => {
-      const [inserted] = await transaction
-        .insert(agents)
-        .values({
-          id: randomUUID(),
-          projectId,
-          registrationDigest,
-          name: input.name,
-          client: input.client,
-          capabilities,
-          lastSeenAt: now,
-          createdAt: now,
-        })
-        .onConflictDoNothing({
-          target: [agents.projectId, agents.registrationDigest],
-        })
-        .returning();
+    try {
+      const agent = await db.transaction(async (transaction) => {
+        const [inserted] = await transaction
+          .insert(agents)
+          .values({
+            id: randomUUID(),
+            projectId,
+            registrationDigest,
+            name: input.name,
+            client: input.client,
+            capabilities,
+            lastSeenAt: now,
+            createdAt: now,
+          })
+          .onConflictDoNothing({
+            target: [agents.projectId, agents.registrationDigest],
+          })
+          .returning();
 
-      if (inserted !== undefined) {
-        return inserted;
-      }
+        let finalAgent = inserted;
+        if (finalAgent === undefined) {
+          const [existing] = await transaction
+            .select()
+            .from(agents)
+            .where(
+              and(
+                eq(agents.projectId, projectId),
+                eq(agents.registrationDigest, registrationDigest),
+              ),
+            )
+            .limit(1);
 
-      const [existing] = await transaction
-        .select()
-        .from(agents)
-        .where(
-          and(
-            eq(agents.projectId, projectId),
-            eq(agents.registrationDigest, registrationDigest),
-          ),
-        )
-        .limit(1);
+          if (existing === undefined) {
+            throw new Error("Registration conflict row disappeared");
+          }
+          if (!sameProfile(existing, input, capabilities)) {
+            throw new AgentMeshError(
+              "REGISTRATION_CONFLICT",
+              "This session identifier is already registered with another profile",
+            );
+          }
 
-      if (existing === undefined) {
-        throw new Error("Registration conflict row disappeared");
-      }
-      if (!sameProfile(existing, input, capabilities)) {
-        throw new AgentMeshError(
-          "REGISTRATION_CONFLICT",
-          "This session identifier is already registered with another profile",
+          const [refreshed] = await transaction
+            .update(agents)
+            .set({ lastSeenAt: now })
+            .where(and(eq(agents.projectId, projectId), eq(agents.id, existing.id)))
+            .returning();
+          if (refreshed === undefined) {
+            throw new Error("Registered agent disappeared during refresh");
+          }
+          finalAgent = refreshed;
+        }
+
+        await activity.record(
+          {
+            projectId,
+            requestId: context.requestId,
+            eventType: "agent.registered",
+            outcome: "success",
+            actorAgentId: finalAgent.id,
+          },
+          transaction,
         );
-      }
-
-      const [refreshed] = await transaction
-        .update(agents)
-        .set({ lastSeenAt: now })
-        .where(and(eq(agents.projectId, projectId), eq(agents.id, existing.id)))
-        .returning();
-      if (refreshed === undefined) {
-        throw new Error("Registered agent disappeared during refresh");
-      }
-      return refreshed;
-    });
-
-    return {
-      agent: publicAgent(agent, agent.id, now),
-      agent_token: deriveAgentToken({
-        projectId,
-        agentId: agent.id,
-        registrationDigest: agent.registrationDigest,
-        signingKey,
-      }),
-    };
-  }
-
-  async function syncAgent(projectId: string, input: PollInput) {
-    const caller = await authenticateAgent(projectId, input.agent_token);
-    const now = clock();
-
-    return db.transaction(async (transaction) => {
-      const acknowledged =
-        input.acknowledge.length === 0
-          ? []
-          : await transaction
-              .update(messages)
-              .set({ acknowledgedAt: now })
-              .where(
-                and(
-                  eq(messages.projectId, projectId),
-                  eq(messages.recipientAgentId, caller.id),
-                  inArray(messages.id, input.acknowledge),
-                  isNull(messages.acknowledgedAt),
-                ),
-              )
-              .returning({ id: messages.id });
-
-      const [refreshed] = await transaction
-        .update(agents)
-        .set({ lastSeenAt: now })
-        .where(and(eq(agents.projectId, projectId), eq(agents.id, caller.id)))
-        .returning();
-      if (refreshed === undefined) {
-        throw new AgentMeshError("AGENT_AUTH_INVALID", "Agent authentication failed");
-      }
-
-      const rows = await transaction
-        .select({
-          id: messages.id,
-          sequence: messages.sequence,
-          senderAgentId: messages.senderAgentId,
-          text: messages.text,
-          createdAt: messages.createdAt,
-        })
-        .from(messages)
-        .where(
-          and(
-            eq(messages.projectId, projectId),
-            eq(messages.recipientAgentId, caller.id),
-            isNull(messages.acknowledgedAt),
-          ),
-        )
-        .orderBy(asc(messages.sequence))
-        .limit(input.limit + 1);
+        return finalAgent;
+      });
 
       return {
-        agent: publicAgent(refreshed, caller.id, now),
-        acknowledged: acknowledged.length,
-        messages: rows.slice(0, input.limit).map(
-          (message): InboxMessage => ({
-            id: message.id,
-            sequence: message.sequence,
-            from_agent_id: message.senderAgentId,
-            text: message.text,
-            created_at: message.createdAt.toISOString(),
-          }),
-        ),
-        has_more: rows.length > input.limit,
+        agent: publicAgent(agent, agent.id, now),
+        agent_token: deriveAgentToken({
+          projectId,
+          agentId: agent.id,
+          registrationDigest: agent.registrationDigest,
+          signingKey,
+        }),
       };
-    });
+    } catch (error) {
+      if (error instanceof AgentMeshError) {
+        await activity.recordBestEffort({
+          projectId,
+          requestId: context.requestId,
+          eventType: "agent.registration_failed",
+          outcome: "failure",
+          errorCode: error.code,
+        });
+      }
+      throw error;
+    }
+  }
+
+  async function syncAgent(projectId: string, input: PollInput, context: OperationContext) {
+    let caller: Agent | null = null;
+
+    try {
+      const authenticatedCaller = await authenticateAgent(projectId, input.agent_token);
+      caller = authenticatedCaller;
+      const now = clock();
+
+      return await db.transaction(async (transaction) => {
+        const acknowledged =
+          input.acknowledge.length === 0
+            ? []
+            : await transaction
+                .update(messages)
+                .set({ acknowledgedAt: now })
+                .where(
+                  and(
+                    eq(messages.projectId, projectId),
+                    eq(messages.recipientAgentId, authenticatedCaller.id),
+                    inArray(messages.id, input.acknowledge),
+                    isNull(messages.acknowledgedAt),
+                  ),
+                )
+                .returning({ id: messages.id });
+
+        const [refreshed] = await transaction
+          .update(agents)
+          .set({ lastSeenAt: now })
+          .where(and(eq(agents.projectId, projectId), eq(agents.id, authenticatedCaller.id)))
+          .returning();
+        if (refreshed === undefined) {
+          throw new AgentMeshError("AGENT_AUTH_INVALID", "Agent authentication failed");
+        }
+
+        const rows = await transaction
+          .select({
+            id: messages.id,
+            sequence: messages.sequence,
+            senderAgentId: messages.senderAgentId,
+            text: messages.text,
+            createdAt: messages.createdAt,
+          })
+          .from(messages)
+          .where(
+            and(
+              eq(messages.projectId, projectId),
+              eq(messages.recipientAgentId, authenticatedCaller.id),
+              isNull(messages.acknowledgedAt),
+            ),
+          )
+          .orderBy(asc(messages.sequence))
+          .limit(input.limit + 1);
+        const delivered = rows.slice(0, input.limit);
+
+        if (delivered.length > 0 || acknowledged.length > 0) {
+          await activity.record(
+            {
+              projectId,
+              requestId: context.requestId,
+              eventType: "agent.synced",
+              outcome: "success",
+              actorAgentId: authenticatedCaller.id,
+              metadata: {
+                delivered_count: delivered.length,
+                acknowledged_count: acknowledged.length,
+                poll_limit: input.limit,
+              },
+            },
+            transaction,
+          );
+        }
+
+        for (const message of acknowledged) {
+          await activity.record(
+            {
+              projectId,
+              requestId: context.requestId,
+              eventType: "message.acknowledged",
+              outcome: "success",
+              actorAgentId: authenticatedCaller.id,
+              messageId: message.id,
+            },
+            transaction,
+          );
+        }
+
+        return {
+          agent: publicAgent(refreshed, authenticatedCaller.id, now),
+          acknowledged: acknowledged.length,
+          messages: delivered.map(
+            (message): InboxMessage => ({
+              id: message.id,
+              sequence: message.sequence,
+              from_agent_id: message.senderAgentId,
+              text: message.text,
+              created_at: message.createdAt.toISOString(),
+            }),
+          ),
+          has_more: rows.length > input.limit,
+        };
+      });
+    } catch (error) {
+      if (error instanceof AgentMeshError) {
+        await activity.recordBestEffort({
+          projectId,
+          requestId: context.requestId,
+          eventType: "agent.synced",
+          outcome: "failure",
+          actorAgentId: caller?.id ?? null,
+          errorCode: error.code,
+        });
+      }
+      throw error;
+    }
   }
 
   async function listAgents(projectId: string, agentToken: string) {

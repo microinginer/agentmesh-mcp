@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { createActivityService } from "../src/activity/service.js";
 import { createAgentService } from "../src/agents/service.js";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
@@ -14,9 +15,11 @@ const databaseUrl =
 const database = createDatabase(databaseUrl);
 const signingKey = Buffer.from("agentmesh-test-signing-key-32-bytes!", "utf8");
 const fixedNow = new Date("2026-08-30T12:00:00.000Z");
+const activity = createActivityService({ db: database.db, clock: () => fixedNow });
 const agentService = createAgentService({
   db: database.db,
   signingKey,
+  activity,
   clock: () => fixedNow,
 });
 const messageService = createMessageService({
@@ -52,7 +55,7 @@ async function register(projectId: string, name: string, client = "codex") {
     name,
     client,
     capabilities: [],
-  });
+  }, { requestId: randomUUID() });
 }
 
 describe("durable direct messages", () => {
@@ -82,7 +85,7 @@ describe("durable direct messages", () => {
       agent_token: recipient.agent_token,
       acknowledge: [],
       limit: 50,
-    });
+    }, { requestId: randomUUID() });
     expect(inbox.messages.map((message) => message.text)).toEqual(["first", "second"]);
   });
 
