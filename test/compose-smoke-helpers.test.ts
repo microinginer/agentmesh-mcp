@@ -46,6 +46,37 @@ describe("Compose smoke helper boundaries", () => {
     await expect(readSecretFreeJson(response, [])).rejects.toThrow(SAFE_SECRET_ERROR);
   });
 
+  it("scans Unicode-normalized duplicate-key JSON before parsing can overwrite a credential marker", async () => {
+    const response = new Response(String.raw`{"x":"\u0061m_proj_hidden","x":"safe"}`);
+
+    await expect(readSecretFreeJson(response, [])).rejects.toThrow(SAFE_SECRET_ERROR);
+  });
+
+  it.each([
+    ["credential m", String.raw`{"x":"a\u006d_proj_hidden","x":"safe"}`],
+    ["credential underscore", String.raw`{"x":"am\u005fproj_hidden","x":"safe"}`],
+    ["credential p", String.raw`{"x":"am_\u0070roj_hidden","x":"safe"}`],
+    ["credential r", String.raw`{"x":"am_p\u0072oj_hidden","x":"safe"}`],
+    ["credential o", String.raw`{"x":"am_pr\u006fj_hidden","x":"safe"}`],
+    ["credential j", String.raw`{"x":"am_pro\u006a_hidden","x":"safe"}`],
+    [
+      "every project marker character",
+      String.raw`{"x":"\u0061\u006d\u005f\u0070\u0072\u006f\u006a_hidden","x":"safe"}`,
+    ],
+    [
+      "every agent marker character",
+      String.raw`{"x":"\u0061\u006d\u005f\u0061\u0067\u0065\u006e\u0074_hidden","x":"safe"}`,
+    ],
+    [
+      "every authorization marker character",
+      String.raw`{"x":"\u0061\u0075\u0074\u0068\u006f\u0072\u0069\u007a\u0061\u0074\u0069\u006f\u006e","x":"safe"}`,
+    ],
+    ["JSON-escaped backslash", String.raw`{"x":"\\u0061m_proj_hidden","x":"safe"}`],
+    ["recursively escaped backslash", String.raw`{"x":"\u005cu005cu0061m_proj_hidden","x":"safe"}`],
+  ])("rejects a duplicate-key marker with an escaped %s", async (_description, body) => {
+    await expect(readSecretFreeJson(new Response(body), [])).rejects.toThrow(SAFE_SECRET_ERROR);
+  });
+
   it("keeps raw JSON and raw log secrecy failures constant and redacted", async () => {
     const rawJsonError = await readSecretFreeJson(
       new Response(JSON.stringify({ items: [{ metadata: { secret: plantedSecret } }] })),

@@ -40,6 +40,37 @@ export function assertSecretFree(value: unknown, secrets: readonly string[]): vo
   }
 }
 
+function securityNormalizeAsciiEscapes(value: string): string {
+  const normalized: string[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    normalized.push(value[index] ?? "");
+    while (normalized.length >= 6) {
+      const escapeStart = normalized.length - 6;
+      if (normalized[escapeStart] !== "\\" || normalized[escapeStart + 1]?.toLowerCase() !== "u") break;
+      const hex = normalized.slice(escapeStart + 2).join("");
+      if (!/^[0-9a-f]{4}$/i.test(hex)) break;
+      const codeUnit = Number.parseInt(hex, 16);
+      if (codeUnit > 0x7f) break;
+
+      // Each collapse replaces six code units with one, so recursive escapes terminate
+      // without growing the already bounded response body.
+      normalized.length = escapeStart;
+      normalized.push(String.fromCharCode(codeUnit));
+    }
+  }
+  return normalized.join("");
+}
+
+function assertSecurityNormalizedSecretFree(value: string, secrets: readonly string[]): void {
+  let normalized: string;
+  try {
+    normalized = securityNormalizeAsciiEscapes(value);
+  } catch {
+    throw safeError(SAFE_SECRET_ERROR);
+  }
+  assertSecretFree(normalized, secrets);
+}
+
 function readScope(timeoutOrSignal: number | AbortSignal): { signal: AbortSignal; dispose: () => void } {
   if (typeof timeoutOrSignal !== "number") {
     return { signal: timeoutOrSignal, dispose: () => {} };
@@ -159,6 +190,7 @@ export async function readSecretFreeJson(
 ): Promise<Record<string, unknown>> {
   const body = await readBoundedText(response, SMOKE_RESPONSE_LIMIT_BYTES, timeoutOrSignal);
   assertSecretFree(body, secrets);
+  assertSecurityNormalizedSecretFree(body, secrets);
   const payload = parseJson(body);
   assertSecretFree(payload, secrets);
   return payload;
