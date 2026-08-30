@@ -161,7 +161,11 @@ describe("authenticated read-only admin HTTP API", () => {
       const page = await app.inject({ method: "GET", url: "/admin" });
       expect(page.statusCode).toBe(200);
       expectNoStore(page);
-      expect(page.headers["content-security-policy"]).toMatch(/script-src 'nonce-[A-Za-z0-9+/]+={0,2}'/);
+      expect(page.headers["content-security-policy"]).toMatch(
+        /^default-src 'none'; script-src 'nonce-[A-Za-z0-9+/]+={0,2}'; style-src 'nonce-[A-Za-z0-9+/]+={0,2}'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'$/,
+      );
+      expect(page.headers["x-content-type-options"]).toBe("nosniff");
+      expect(page.headers["referrer-policy"]).toBe("no-referrer");
       expect(page.body).toContain("AgentMesh administration");
 
       const unauthorized = await app.inject({ method: "GET", url: "/api/admin/projects" });

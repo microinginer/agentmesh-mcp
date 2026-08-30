@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { z } from "zod";
@@ -131,9 +133,14 @@ export function registerAdminRoutes(
 
   app.get("/admin", { errorHandler: adminErrorHandler }, async (request, reply) => {
     const session = parseAdminCookie(request.headers.cookie);
-    const page = renderAdminPage(session !== null && dependencies.auth.verifySession(session));
+    const page = renderAdminPage({
+      authenticated: session !== null && dependencies.auth.verifySession(session),
+      nonce: randomBytes(16).toString("base64"),
+    });
     return reply
       .header("Content-Security-Policy", page.contentSecurityPolicy)
+      .header("X-Content-Type-Options", "nosniff")
+      .header("Referrer-Policy", "no-referrer")
       .type("text/html; charset=utf-8")
       .send(page.body);
   });
