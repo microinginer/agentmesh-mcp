@@ -1,6 +1,6 @@
 # AgentMesh Alpha Design
 
-**Status:** Approved design, revised after architecture review, pending final specification review
+**Status:** Approved for implementation after final architecture review
 
 **Date:** 2026-08-30
 
@@ -606,6 +606,7 @@ The self-hosted compose file:
 - publishes the application port only on host loopback when no reverse proxy is configured, and otherwise exposes it only to the proxy's internal Docker network;
 - requires TLS termination for remote access;
 - does not embed project tokens or database secrets in the image.
+- defines a one-shot `migrate` service on the same application image whose migration-role DSN is not present in the long-running `agentmesh` service.
 
 ### 17.1 Self-hosted installation
 
@@ -616,12 +617,12 @@ cp .env.example .env
 chmod 600 .env
 ./scripts/init-env .env
 docker compose up -d postgres
-docker compose run --rm agentmesh agentmesh db migrate
+docker compose run --rm migrate agentmesh db migrate
 docker compose up -d agentmesh
 docker compose exec agentmesh agentmesh project create --name "My project"
 ```
 
-`scripts/init-env` starts with `umask 077`, refuses symlinks and files not owned by the effective user, and refuses to write unless the target is a regular file with mode `0600`. It fills previously unset database credentials and independent 256-bit signing secrets without printing them, refuses to overwrite an existing non-placeholder value, and atomically replaces the target through a same-directory temporary file that is also mode `0600`. Failure removes the temporary file and leaves the original unchanged. The application performs no automatic destructive schema operation at startup. Migration credentials are available only to the one-shot migration container, not the running application. `/ready` remains unsuccessful until the expected migration version is applied. Documentation includes TLS reverse-proxy examples for Caddy and Nginx.
+`scripts/init-env` starts with `umask 077`, refuses symlinks and files not owned by the effective user, and refuses to write unless the target is a regular file with mode `0600`. It fills previously unset runtime/migration database credentials and independent 256-bit signing secrets without printing them, refuses to overwrite an existing non-placeholder value, and atomically replaces the target through a same-directory temporary file that is also mode `0600`. Failure removes the temporary file and leaves the original unchanged. The application performs no automatic destructive schema operation at startup. Compose injects the migration-role DSN only into the one-shot `migrate` service and the least-privilege application DSN only into the long-running `agentmesh` service. `/ready` remains unsuccessful until the expected migration version is applied. Documentation includes TLS reverse-proxy examples for Caddy and Nginx.
 
 ### 17.2 Hosted alpha
 
@@ -712,6 +713,7 @@ Metric labels must not include message contents, tokens, agent-provided values, 
 ### 20.4 Deployment smoke tests
 
 - Fresh Docker Compose installation executes migration before project creation.
+- The one-shot `migrate` container has the migration-role DSN, while the running `agentmesh` container environment contains only the application-role DSN.
 - Secret initialization refuses unsafe owner/mode and symlink targets; with mode `0600` it atomically replaces the file, removes all placeholders/default credentials, generates independent keys, preserves `0600`, and emits no secret to stdout or stderr.
 - Server restart preserves messages and cursor state.
 - PostgreSQL is not published externally by the default compose file.
