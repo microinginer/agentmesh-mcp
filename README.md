@@ -18,9 +18,9 @@ docker compose up --build -d --wait
 docker compose exec agentmesh node dist/cli.js project create --name "My project"
 ```
 
-The second command prints JSON containing `project_id`, `token_id`, and the
-project `token`. The token is printed only when it is created. Keep it outside
-the repository:
+The project create command prints JSON containing `project_id`, `token_id`, and
+the project `token`. The token is printed only when it is created. Keep it
+outside the repository:
 
 ```bash
 export AGENTMESH_PROJECT_TOKEN='am_proj_...'
