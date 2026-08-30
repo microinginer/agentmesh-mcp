@@ -6,6 +6,8 @@ import { createActivityService } from "../src/activity/service.js";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import { activityEvents, agents, messages, projects } from "../src/db/schema.js";
+import type { AgentMeshErrorCode } from "../src/errors.js";
+import type { ActivityMetadata } from "../src/activity/types.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
@@ -85,6 +87,31 @@ describe("activity journal persistence", () => {
 
     const [stored] = await database.db.select().from(activityEvents);
     expect(stored?.metadata).toEqual({ message_bytes: 17, deduplicated: false });
+    expect(JSON.stringify(stored)).not.toContain("must-not");
+  });
+
+  it("drops unsafe runtime metadata and error codes before persistence", async () => {
+    const { projectId } = await createProjectMessageFixture();
+    const activity = createActivityService({ db: database.db });
+
+    await activity.record({
+      projectId,
+      requestId: randomUUID(),
+      eventType: "message.send_failed",
+      outcome: "failure",
+      errorCode: "must-not-persist" as unknown as AgentMeshErrorCode,
+      metadata: {
+        message_bytes: 17,
+        deduplicated: false,
+        agent_token: "must-not-persist",
+        text: "must-not-duplicate",
+        arbitrary: { authorization: "must-not-persist" },
+      } as unknown as ActivityMetadata,
+    });
+
+    const [stored] = await database.db.select().from(activityEvents);
+    expect(stored?.metadata).toEqual({ message_bytes: 17, deduplicated: false });
+    expect(stored?.errorCode).toBeNull();
     expect(JSON.stringify(stored)).not.toContain("must-not");
   });
 
@@ -171,5 +198,24 @@ describe("activity journal persistence", () => {
     ).resolves.toBeUndefined();
 
     expect(reports).toEqual([{ event: "activity.persist_failed", request_id: requestId }]);
+  });
+
+  it("does not reject when a best-effort persistence callback throws", async () => {
+    const activity = createActivityService({
+      db: database.db,
+      onPersistFailure: () => {
+        throw new Error("logger unavailable");
+      },
+    });
+
+    await expect(
+      activity.recordBestEffort({
+        projectId: randomUUID(),
+        requestId: randomUUID(),
+        eventType: "mcp.request_failed",
+        outcome: "failure",
+        errorCode: "INTERNAL_ERROR",
+      }),
+    ).resolves.toBeUndefined();
   });
 });

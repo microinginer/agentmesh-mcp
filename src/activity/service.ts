@@ -5,6 +5,15 @@ import type { ActivityEventType, ActivityMetadata, ActivityOutcome } from "./typ
 
 type ActivityExecutor = Pick<AgentMeshDatabase, "insert">;
 
+const agentMeshErrorCodes = new Set<AgentMeshErrorCode>([
+  "AGENT_AUTH_INVALID",
+  "PROJECT_AUTH_INVALID",
+  "REGISTRATION_CONFLICT",
+  "TARGET_AGENT_INVALID",
+  "IDEMPOTENCY_CONFLICT",
+  "INTERNAL_ERROR",
+]);
+
 export interface RecordActivityInput {
   projectId: string;
   requestId: string;
@@ -28,6 +37,44 @@ interface ActivityServiceDependencies {
   onPersistFailure?: (failure: ActivityPersistFailure) => void;
 }
 
+function safeMetadata(metadata: unknown): ActivityMetadata {
+  const safe: ActivityMetadata = {};
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return safe;
+  }
+
+  const candidate = metadata as Record<string, unknown>;
+  if (typeof candidate.message_bytes === "number" && Number.isFinite(candidate.message_bytes)) {
+    safe.message_bytes = candidate.message_bytes;
+  }
+  if (
+    typeof candidate.delivered_count === "number" &&
+    Number.isFinite(candidate.delivered_count)
+  ) {
+    safe.delivered_count = candidate.delivered_count;
+  }
+  if (
+    typeof candidate.acknowledged_count === "number" &&
+    Number.isFinite(candidate.acknowledged_count)
+  ) {
+    safe.acknowledged_count = candidate.acknowledged_count;
+  }
+  if (typeof candidate.poll_limit === "number" && Number.isFinite(candidate.poll_limit)) {
+    safe.poll_limit = candidate.poll_limit;
+  }
+  if (typeof candidate.deduplicated === "boolean") {
+    safe.deduplicated = candidate.deduplicated;
+  }
+  return safe;
+}
+
+function safeErrorCode(errorCode: unknown): AgentMeshErrorCode | null {
+  if (typeof errorCode !== "string" || !agentMeshErrorCodes.has(errorCode as AgentMeshErrorCode)) {
+    return null;
+  }
+  return errorCode as AgentMeshErrorCode;
+}
+
 export function createActivityService(dependencies: ActivityServiceDependencies) {
   const { db } = dependencies;
   const clock = dependencies.clock ?? (() => new Date());
@@ -44,8 +91,8 @@ export function createActivityService(dependencies: ActivityServiceDependencies)
       actorAgentId: input.actorAgentId ?? null,
       targetAgentId: input.targetAgentId ?? null,
       messageId: input.messageId ?? null,
-      errorCode: input.errorCode ?? null,
-      metadata: input.metadata ?? {},
+      errorCode: safeErrorCode(input.errorCode),
+      metadata: safeMetadata(input.metadata),
       createdAt: clock(),
     });
   }
@@ -54,10 +101,12 @@ export function createActivityService(dependencies: ActivityServiceDependencies)
     try {
       await record(input);
     } catch {
-      dependencies.onPersistFailure?.({
-        event: "activity.persist_failed",
-        request_id: input.requestId,
-      });
+      try {
+        await dependencies.onPersistFailure?.({
+          event: "activity.persist_failed",
+          request_id: input.requestId,
+        });
+      } catch {}
     }
   }
 
