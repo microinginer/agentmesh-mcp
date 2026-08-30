@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+import { createHash, createHmac } from "node:crypto";
+
 import { loadConfig } from "../src/config.js";
 
 const key = Buffer.alloc(32, 7).toString("base64url");
+const rawAdminToken = Buffer.alloc(32, 9).toString("base64url");
 
 describe("runtime configuration", () => {
   it("loads validated defaults and decodes the signing key", () => {
@@ -36,6 +39,34 @@ describe("runtime configuration", () => {
     });
   });
 
+  it.each([undefined, ""])("disables the local admin dashboard when its token is absent or empty", (adminToken) => {
+    const config = loadConfig({
+      DATABASE_URL: "postgres://agentmesh:secret@postgres:5432/agentmesh",
+      AGENT_SESSION_SIGNING_KEY: key,
+      AGENTMESH_ADMIN_TOKEN: adminToken,
+    });
+
+    expect(config.admin).toBeNull();
+  });
+
+  it("derives local admin credentials without retaining the raw token", () => {
+    const config = loadConfig({
+      DATABASE_URL: "postgres://agentmesh:secret@postgres:5432/agentmesh",
+      AGENT_SESSION_SIGNING_KEY: key,
+      AGENTMESH_ADMIN_TOKEN: rawAdminToken,
+      AGENTMESH_ADMIN_COOKIE_SECURE: "1",
+    });
+
+    expect(config.admin).toEqual({
+      tokenDigest: createHash("sha256").update(rawAdminToken).digest(),
+      sessionSigningKey: createHmac("sha256", Buffer.alloc(32, 7))
+        .update("agentmesh-admin-session-v1")
+        .digest(),
+      secureCookies: true,
+    });
+    expect(Object.values(config.admin ?? {})).not.toContain(rawAdminToken);
+  });
+
   it.each([
     { DATABASE_URL: "", AGENT_SESSION_SIGNING_KEY: key },
     { DATABASE_URL: "https://example.com", AGENT_SESSION_SIGNING_KEY: key },
@@ -52,6 +83,16 @@ describe("runtime configuration", () => {
       DATABASE_URL: "postgres://agentmesh:secret@postgres:5432/agentmesh",
       AGENT_SESSION_SIGNING_KEY: key,
       ALLOWED_HOSTS: " , ",
+    },
+    {
+      DATABASE_URL: "postgres://agentmesh:secret@postgres:5432/agentmesh",
+      AGENT_SESSION_SIGNING_KEY: key,
+      AGENTMESH_ADMIN_TOKEN: Buffer.alloc(31, 9).toString("base64url"),
+    },
+    {
+      DATABASE_URL: "postgres://agentmesh:secret@postgres:5432/agentmesh",
+      AGENT_SESSION_SIGNING_KEY: key,
+      AGENTMESH_ADMIN_TOKEN: "not base64url!",
     },
   ])("rejects unsafe or incomplete configuration", (environment) => {
     expect(() => loadConfig(environment)).toThrow("Invalid AgentMesh configuration");

@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 
 import type { FastifyInstance } from "fastify";
 
+import { createAdminAuth, type AdminAuth } from "./admin/auth.js";
 import { loadConfig, type AgentMeshConfig } from "./config.js";
 import { createDatabase, type DatabaseConnection } from "./db/client.js";
 import { migrateDatabase } from "./db/migrate.js";
@@ -12,10 +13,12 @@ import { createProjectService } from "./projects/service.js";
 export interface AgentMeshRuntime {
   app: FastifyInstance;
   database: DatabaseConnection;
+  adminAuth: AdminAuth | null;
   close: () => Promise<void>;
 }
 
 export async function startServer(config: AgentMeshConfig): Promise<AgentMeshRuntime> {
+  const adminAuth = config.admin === null ? null : createAdminAuth(config.admin);
   const database = createDatabase(config.databaseUrl);
   try {
     await migrateDatabase(database.db);
@@ -33,6 +36,7 @@ export async function startServer(config: AgentMeshConfig): Promise<AgentMeshRun
     return {
       app,
       database,
+      adminAuth,
       close: async () => {
         if (closed) {
           return;

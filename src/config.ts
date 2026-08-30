@@ -1,3 +1,5 @@
+import { createHash, createHmac } from "node:crypto";
+
 import { z } from "zod";
 
 const environmentSchema = z.object({
@@ -16,7 +18,15 @@ const environmentSchema = z.object({
   HOST: z.string().min(1).default("127.0.0.1"),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   ALLOWED_HOSTS: z.string().optional(),
+  AGENTMESH_ADMIN_TOKEN: z.string().optional(),
+  AGENTMESH_ADMIN_COOKIE_SECURE: z.enum(["0", "1"]).default("0"),
 });
+
+export interface AdminConfig {
+  tokenDigest: Buffer;
+  sessionSigningKey: Buffer;
+  secureCookies: boolean;
+}
 
 export interface AgentMeshConfig {
   databaseUrl: string;
@@ -24,6 +34,7 @@ export interface AgentMeshConfig {
   host: string;
   port: number;
   allowedHosts: string[];
+  admin: AdminConfig | null;
 }
 
 export function loadConfig(environment: Record<string, string | undefined>): AgentMeshConfig {
@@ -48,11 +59,27 @@ export function loadConfig(environment: Record<string, string | undefined>): Age
     throw new Error("Invalid AgentMesh configuration: ALLOWED_HOSTS");
   }
 
+  const adminToken = parsed.data.AGENTMESH_ADMIN_TOKEN;
+  let admin: AdminConfig | null = null;
+  if (adminToken !== undefined && adminToken !== "") {
+    if (!/^[A-Za-z0-9_-]+$/.test(adminToken) || Buffer.from(adminToken, "base64url").byteLength < 32) {
+      throw new Error("Invalid AgentMesh configuration: AGENTMESH_ADMIN_TOKEN");
+    }
+    admin = {
+      tokenDigest: createHash("sha256").update(adminToken, "utf8").digest(),
+      sessionSigningKey: createHmac("sha256", signingKey)
+        .update("agentmesh-admin-session-v1", "utf8")
+        .digest(),
+      secureCookies: parsed.data.AGENTMESH_ADMIN_COOKIE_SECURE === "1",
+    };
+  }
+
   return {
     databaseUrl: parsed.data.DATABASE_URL,
     signingKey,
     host: parsed.data.HOST,
     port: parsed.data.PORT,
     allowedHosts,
+    admin,
   };
 }
