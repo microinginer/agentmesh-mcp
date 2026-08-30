@@ -43,6 +43,52 @@ function structured<T>(result: CallToolResult): T {
 }
 
 describe("AgentMesh MCP over Streamable HTTP", () => {
+  it("logs unauthenticated project requests without credential or identity data", async () => {
+    const logged: SafeLogEvent[] = [];
+    const app = buildHttpApp({
+      db: database.db,
+      signingKey,
+      projectService,
+      host: "127.0.0.1",
+      allowedHosts: ["127.0.0.1", "localhost"],
+      logger: { write: (event) => logged.push(event) },
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected a TCP test listener");
+    }
+    const endpoint = new URL(`http://127.0.0.1:${address.port}/mcp`);
+
+    try {
+      for (const authorization of [
+        undefined,
+        "Basic Zm9vOmJhcg==",
+        `Bearer am_proj_${randomUUID()}.${"a".repeat(43)}`,
+      ]) {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(authorization === undefined ? {} : { authorization }),
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+        });
+        expect(response.status).toBe(401);
+        expect(response.headers.get("www-authenticate")).toBe("Bearer");
+        expect(await response.json()).toEqual({ error: "unauthorized" });
+      }
+
+      expect(logged).toEqual([
+        { event: "http.request_failed" },
+        { event: "http.request_failed" },
+        { event: "http.request_failed" },
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("records one safe event and response for unexpected MCP failures", async () => {
     const projectId = randomUUID();
     const requestId = randomUUID();
@@ -123,6 +169,7 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       projectService,
       host: "127.0.0.1",
       allowedHosts: ["127.0.0.1", "localhost"],
+      logger: { write: () => {} },
     });
     await app.listen({ host: "127.0.0.1", port: 0 });
     const address = app.server.address();

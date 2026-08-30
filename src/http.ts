@@ -11,6 +11,7 @@ import type { AuthInfo } from "@modelcontextprotocol/server";
 import type { AgentMeshDatabase } from "./db/client.js";
 import { AgentMeshError } from "./errors.js";
 import { createSafeLogger } from "./logging.js";
+import type { SafeLogger } from "./logging.js";
 import { buildMcpHandler } from "./mcp/server.js";
 import type { ProjectService } from "./projects/service.js";
 
@@ -20,6 +21,7 @@ interface HttpAppDependencies {
   projectService: Pick<ProjectService, "authenticateProject">;
   host: string;
   allowedHosts: string[];
+  logger?: SafeLogger;
 }
 
 type AuthenticatedIncomingMessage = IncomingMessage & { auth?: AuthInfo };
@@ -33,7 +35,7 @@ function bearerFromHeader(header: string | undefined): string | null {
 }
 
 export function buildHttpApp(dependencies: HttpAppDependencies) {
-  const logger = createSafeLogger();
+  const logger = dependencies.logger ?? createSafeLogger();
   const app = createMcpFastifyApp({
     host: dependencies.host,
     allowedHosts: dependencies.allowedHosts,
@@ -51,6 +53,7 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
   app.post("/mcp", async (request, reply) => {
     const bearer = bearerFromHeader(request.headers.authorization);
     if (bearer === null) {
+      logger.write({ event: "http.request_failed" });
       return reply.header("WWW-Authenticate", "Bearer").code(401).send({ error: "unauthorized" });
     }
 
@@ -59,6 +62,7 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
       projectId = await dependencies.projectService.authenticateProject(bearer);
     } catch (error) {
       if (error instanceof AgentMeshError && error.code === "PROJECT_AUTH_INVALID") {
+        logger.write({ event: "http.request_failed" });
         return reply.header("WWW-Authenticate", "Bearer").code(401).send({ error: "unauthorized" });
       }
       logger.write({ event: "http.request_failed", error_code: "INTERNAL_ERROR" });
