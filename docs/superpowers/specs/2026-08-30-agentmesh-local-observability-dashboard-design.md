@@ -1,6 +1,6 @@
 # AgentMesh Local Observability Dashboard Design
 
-**Status:** Approved in chat; pending written-spec review
+**Status:** Approved for implementation
 
 **Date:** 2026-08-30
 
@@ -70,6 +70,12 @@ send attempt because a failed operation creates no message row. The activity
 journal records safe operational outcomes so the dashboard can distinguish
 what an agent claimed from what the server actually accepted.
 
+The journal covers requests that reach AgentMesh. A client-side approval
+denial, MCP client crash, or transport failure before the HTTP request reaches
+the server cannot create a server-side event; it remains visible only in the
+client log. In that case the dashboard correctly shows no accepted message or
+server outcome and must not invent a failed-send row.
+
 The journal is append-only from the dashboard's perspective. No admin route
 updates or deletes journal rows.
 
@@ -107,11 +113,11 @@ The first version supports:
 - `message.acknowledged`;
 - `mcp.request_failed`.
 
-`mcp.request_failed` covers a request only after valid project authentication,
-so it can be attributed to a project without retaining a credential. A request
-with a missing, malformed, or unknown project token has no trustworthy project
-identity and is reported only as a redacted structured server-log event. The
-token and its digest are never logged.
+`mcp.request_failed` covers a server-visible tool operation only after valid
+project authentication, so it can be attributed to a project without retaining
+a credential. A request with a missing, malformed, or unknown project token has
+no trustworthy project identity and is reported only as a redacted structured
+server-log event. The token and its digest are never logged.
 
 An empty successful inbox poll is not journaled. The agent's `last_seen_at`
 already represents that heartbeat, and recording every empty poll would make
@@ -165,7 +171,8 @@ Opening `/admin` without a valid session displays a login form. A successful
 login compares the supplied token in constant time and sets a signed,
 `HttpOnly`, `SameSite=Strict` cookie. The cookie:
 
-- is scoped to the admin routes;
+- uses `Path=/` because the page and API live under the disjoint `/admin` and
+  `/api/admin` prefixes; only admin handlers inspect it;
 - contains no admin token;
 - expires after 12 hours;
 - is signed using a domain-separated server key;
