@@ -20,11 +20,45 @@ const environmentSchema = z.object({
   ALLOWED_HOSTS: z.string().optional(),
   AGENTMESH_ADMIN_TOKEN: z.string().optional(),
   AGENTMESH_ADMIN_COOKIE_SECURE: z.enum(["0", "1"]).default("0"),
+  GITHUB_OAUTH_CLIENT_ID: z.string().optional(),
+  GITHUB_OAUTH_CLIENT_SECRET: z.string().optional(),
+  GITHUB_OAUTH_CALLBACK_URL: z.string().optional(),
+  AGENTMESH_PUBLIC_ORIGIN: z.string().optional(),
+  AGENTMESH_WEB_AUTH_KEY: z.string().optional(),
+  AGENTMESH_OPERATOR_GITHUB_IDS: z.string().optional(),
+  AGENTMESH_PROJECT_LIMIT: z.string().optional(),
+  AGENTMESH_TOKEN_TTL_DAYS: z.string().optional(),
 });
+
+const hostedRequiredEnvironmentNames = [
+  "GITHUB_OAUTH_CLIENT_ID",
+  "GITHUB_OAUTH_CLIENT_SECRET",
+  "GITHUB_OAUTH_CALLBACK_URL",
+  "AGENTMESH_PUBLIC_ORIGIN",
+  "AGENTMESH_WEB_AUTH_KEY",
+  "AGENTMESH_OPERATOR_GITHUB_IDS",
+  "AGENTMESH_PROJECT_LIMIT",
+] as const;
+
+type HostedRequiredEnvironmentName = (typeof hostedRequiredEnvironmentNames)[number];
+
+const DEFAULT_TOKEN_TTL_DAYS = 90;
 
 export interface AdminConfig {
   tokenDigest: Buffer;
   sessionSigningKey: Buffer;
+  secureCookies: boolean;
+}
+
+export interface WebAuthConfig {
+  clientId: string;
+  clientSecret: string;
+  callbackUrl: URL;
+  publicOrigin: URL;
+  authKey: Buffer;
+  operatorGitHubIds: ReadonlySet<string>;
+  projectLimit: number;
+  tokenTtlDays: number;
   secureCookies: boolean;
 }
 
@@ -35,6 +69,101 @@ export interface AgentMeshConfig {
   port: number;
   allowedHosts: string[];
   admin: AdminConfig | null;
+  web: WebAuthConfig | null;
+}
+
+function isBlank(value: string | undefined): boolean {
+  return value === undefined || value.length === 0;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
+function parseWebUrl(value: string, field: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Invalid AgentMesh configuration: ${field}`);
+  }
+
+  const loopbackHttp = url.protocol === "http:" && isLoopbackHostname(url.hostname);
+  if ((url.protocol !== "https:" && !loopbackHttp) || url.username !== "" || url.password !== "") {
+    throw new Error(`Invalid AgentMesh configuration: ${field}`);
+  }
+  return url;
+}
+
+function decodeBase64urlKey(value: string, field: string): Buffer {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`Invalid AgentMesh configuration: ${field}`);
+  }
+
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.byteLength !== 32 || decoded.toString("base64url") !== value) {
+    throw new Error(`Invalid AgentMesh configuration: ${field}`);
+  }
+  return decoded;
+}
+
+function parseBoundedInteger(value: string, field: string, minimum: number, maximum: number): number {
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`Invalid AgentMesh configuration: ${field}`);
+  }
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
+    throw new Error(`Invalid AgentMesh configuration: ${field}`);
+  }
+  return number;
+}
+
+function parseOperatorGitHubIds(value: string): ReadonlySet<string> {
+  const ids = value.split(",").map((entry) => entry.trim());
+  if (ids.length === 0 || ids.some((id) => !/^[1-9]\d*$/.test(id))) {
+    throw new Error("Invalid AgentMesh configuration: AGENTMESH_OPERATOR_GITHUB_IDS");
+  }
+  return new Set(ids);
+}
+
+function createWebAuthConfig(environment: z.infer<typeof environmentSchema>): WebAuthConfig | null {
+  const requiredValues = hostedRequiredEnvironmentNames.map((name) => ({ name, value: environment[name] }));
+  if (requiredValues.every(({ value }) => isBlank(value)) && isBlank(environment.AGENTMESH_TOKEN_TTL_DAYS)) {
+    return null;
+  }
+
+  const missingName = requiredValues.find(({ value }) => isBlank(value))?.name;
+  if (missingName !== undefined) {
+    throw new Error(`Invalid AgentMesh configuration: ${missingName}`);
+  }
+
+  const values = Object.fromEntries(
+    requiredValues.map(({ name, value }) => [name, value]),
+  ) as Record<HostedRequiredEnvironmentName, string>;
+  const callbackUrl = parseWebUrl(values.GITHUB_OAUTH_CALLBACK_URL, "GITHUB_OAUTH_CALLBACK_URL");
+  const publicOrigin = parseWebUrl(values.AGENTMESH_PUBLIC_ORIGIN, "AGENTMESH_PUBLIC_ORIGIN");
+  if (callbackUrl.origin !== publicOrigin.origin) {
+    throw new Error("Invalid AgentMesh configuration: GITHUB_OAUTH_CALLBACK_URL, AGENTMESH_PUBLIC_ORIGIN");
+  }
+
+  const web = {
+    clientId: values.GITHUB_OAUTH_CLIENT_ID,
+    callbackUrl,
+    publicOrigin,
+    operatorGitHubIds: parseOperatorGitHubIds(values.AGENTMESH_OPERATOR_GITHUB_IDS),
+    projectLimit: parseBoundedInteger(values.AGENTMESH_PROJECT_LIMIT, "AGENTMESH_PROJECT_LIMIT", 0, 100),
+    tokenTtlDays:
+      environment.AGENTMESH_TOKEN_TTL_DAYS === undefined || environment.AGENTMESH_TOKEN_TTL_DAYS === ""
+        ? DEFAULT_TOKEN_TTL_DAYS
+        : parseBoundedInteger(environment.AGENTMESH_TOKEN_TTL_DAYS, "AGENTMESH_TOKEN_TTL_DAYS", 1, 3650),
+    secureCookies: publicOrigin.protocol === "https:",
+  } as Omit<WebAuthConfig, "clientSecret" | "authKey">;
+
+  Object.defineProperties(web, {
+    clientSecret: { value: values.GITHUB_OAUTH_CLIENT_SECRET, enumerable: false },
+    authKey: { value: decodeBase64urlKey(values.AGENTMESH_WEB_AUTH_KEY, "AGENTMESH_WEB_AUTH_KEY"), enumerable: false },
+  });
+  return web as WebAuthConfig;
 }
 
 export function loadConfig(environment: Record<string, string | undefined>): AgentMeshConfig {
@@ -74,6 +203,8 @@ export function loadConfig(environment: Record<string, string | undefined>): Age
     };
   }
 
+  const web = createWebAuthConfig(parsed.data);
+
   return {
     databaseUrl: parsed.data.DATABASE_URL,
     signingKey,
@@ -81,5 +212,6 @@ export function loadConfig(environment: Record<string, string | undefined>): Age
     port: parsed.data.PORT,
     allowedHosts,
     admin,
+    web,
   };
 }
