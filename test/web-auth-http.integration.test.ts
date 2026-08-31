@@ -13,7 +13,7 @@ import { auditEvents, oauthAttempts, oauthIdentities, users, webSessions } from 
 import { buildHttpApp } from "../src/http.js";
 import { createProjectService } from "../src/projects/service.js";
 import type { GitHubOAuthClient, GitHubProfile } from "../src/web-auth/github-client.js";
-import { createIdentityService } from "../src/web-auth/identity-service.js";
+import { createIdentityService, type IdentityService } from "../src/web-auth/identity-service.js";
 import { createWebSessionService, type WebSessionService } from "../src/web-auth/session-service.js";
 import { deriveWebAuthKeys } from "../src/web-auth/session-token.js";
 import { resetDatabase } from "./support/database.js";
@@ -219,6 +219,7 @@ describe("web OAuth HTTP routes", () => {
     github: GitHubOAuthClient;
     clock?: ReturnType<typeof createTestClock>;
     secureCookies?: boolean;
+    wrapIdentityService?: (service: IdentityService) => IdentityService;
     wrapSessionService?: (service: WebSessionService) => WebSessionService;
   }) {
     const clock = input.clock ?? createTestClock("2026-08-01T00:00:00.000Z");
@@ -228,6 +229,7 @@ describe("web OAuth HTTP routes", () => {
       keys: deriveWebAuthKeys(config.authKey),
       clock: clock.now,
     });
+    const identityService = createIdentityService({ db: database.db, clock: clock.now });
     return {
       app: buildHttpApp({
         db: database.db,
@@ -241,7 +243,7 @@ describe("web OAuth HTTP routes", () => {
           db: database.db,
           config,
           githubClient: input.github,
-          identityService: createIdentityService({ db: database.db, clock: clock.now }),
+          identityService: input.wrapIdentityService?.(identityService) ?? identityService,
           sessionService: input.wrapSessionService?.(sessionService) ?? sessionService,
           auditService: createAuditService({ db: database.db, clock: clock.now }),
           clock: clock.now,
@@ -360,7 +362,7 @@ describe("web OAuth HTTP routes", () => {
         expect.objectContaining({
           userId: null,
           eventType: "auth.login_failed",
-          metadata: { provider: "github" },
+          metadata: { provider: "github", oauth_failure_stage: "session" },
         }),
       ]);
     } finally {
@@ -386,6 +388,59 @@ describe("web OAuth HTTP routes", () => {
       ]);
     } finally {
       await successful.app.close();
+    }
+  });
+
+  it.each([
+    {
+      stage: "exchange",
+      github: {
+        authorizationUrl: (state: string, challenge: string) => new URL(
+          `https://github.example.test/authorize?state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(challenge)}`,
+        ),
+        exchangeCode: async () => { throw new Error("provider exchange failed"); },
+        fetchProfile: async () => { throw new Error("must not fetch a profile"); },
+      } satisfies GitHubOAuthClient,
+      wrapIdentityService: undefined,
+    },
+    {
+      stage: "profile",
+      github: {
+        authorizationUrl: (state: string, challenge: string) => new URL(
+          `https://github.example.test/authorize?state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(challenge)}`,
+        ),
+        exchangeCode: async () => accessToken,
+        fetchProfile: async () => { throw new Error("provider profile failed"); },
+      } satisfies GitHubOAuthClient,
+      wrapIdentityService: undefined,
+    },
+    {
+      stage: "identity",
+      github: fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null }).client,
+      wrapIdentityService: (service: IdentityService): IdentityService => ({
+        ...service,
+        upsertGitHub: async () => { throw new Error("identity persistence failed"); },
+      }),
+    },
+  ])("records only the safe $stage stage when OAuth completion fails", async ({ stage, github, wrapIdentityService }) => {
+    const { app } = buildWebApp({ github, ...(wrapIdentityService === undefined ? {} : { wrapIdentityService }) });
+    try {
+      const attempt = await start(app);
+      const callback = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${attempt.state}`,
+        headers: { cookie: attempt.cookie },
+      });
+      expect(callback.headers.location).toBe("/?auth_error=github");
+      expect(await database.db.select().from(auditEvents)).toEqual([
+        expect.objectContaining({
+          userId: null,
+          eventType: "auth.login_failed",
+          metadata: { provider: "github", oauth_failure_stage: stage },
+        }),
+      ]);
+    } finally {
+      await app.close();
     }
   });
 

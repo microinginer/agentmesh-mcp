@@ -58,11 +58,14 @@ function sameState(actual: string, expected: string): boolean {
 export function createOAuthService(dependencies: OAuthServiceDependencies): OAuthService {
   const clock = dependencies.clock ?? (() => new Date());
 
-  async function failed(): Promise<null> {
+  async function failed(stage?: "exchange" | "profile" | "identity" | "session"): Promise<null> {
     await dependencies.auditService.recordBestEffort({
       userId: null,
       eventType: "auth.login_failed",
-      metadata: { provider: "github" },
+      metadata: {
+        provider: "github",
+        ...(stage === undefined ? {} : { oauth_failure_stage: stage }),
+      },
     });
     return null;
   }
@@ -162,20 +165,41 @@ export function createOAuthService(dependencies: OAuthServiceDependencies): OAut
       if (!isCanonicalWebCredential(input.state)) return failed();
       if (!sameState(input.state, input.attempt.state)) return failed();
 
-      accessToken = await dependencies.oauthClient.exchangeCode(input.code, input.attempt.verifier);
-      const profile = await dependencies.oauthClient.fetchProfile(accessToken);
+      try {
+        accessToken = await dependencies.oauthClient.exchangeCode(input.code, input.attempt.verifier);
+      } catch {
+        return failed("exchange");
+      }
+
+      let profile;
+      try {
+        profile = await dependencies.oauthClient.fetchProfile(accessToken);
+      } catch {
+        return failed("profile");
+      }
       if (input.currentSession !== null && input.currentSession.githubUserId !== profile.id) {
         return failed();
       }
 
-      const identity = await dependencies.identityService.upsertGitHub(profile);
-      const session = input.currentSession === null
-        ? await dependencies.sessionService.issue(identity.userId)
-        : await dependencies.sessionService.rotateForReauthentication(
-          input.currentSession.sessionId,
-          identity.userId,
-        );
-      if (session === null) return failed();
+      let identity;
+      try {
+        identity = await dependencies.identityService.upsertGitHub(profile);
+      } catch {
+        return failed("identity");
+      }
+
+      let session: IssuedWebSession | null;
+      try {
+        session = input.currentSession === null
+          ? await dependencies.sessionService.issue(identity.userId)
+          : await dependencies.sessionService.rotateForReauthentication(
+            input.currentSession.sessionId,
+            identity.userId,
+          );
+      } catch {
+        return failed("session");
+      }
+      if (session === null) return failed("session");
       await dependencies.auditService.recordBestEffort({
         userId: identity.userId,
         eventType: "auth.login_succeeded",

@@ -35,6 +35,12 @@ function safeMetadata(metadata: unknown): AuditMetadata {
   if (candidate.provider === "github") {
     safe.provider = "github";
   }
+  if (candidate.oauth_failure_stage === "exchange"
+    || candidate.oauth_failure_stage === "profile"
+    || candidate.oauth_failure_stage === "identity"
+    || candidate.oauth_failure_stage === "session") {
+    safe.oauth_failure_stage = candidate.oauth_failure_stage;
+  }
   if (typeof candidate.connection_label === "string") {
     safe.connection_label = candidate.connection_label;
   }
