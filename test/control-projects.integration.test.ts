@@ -513,11 +513,24 @@ describe("owner project HTTP routes", () => {
       });
       expect(listed.statusCode).toBe(200);
       expect(listed.headers["cache-control"]).toBe("no-store");
+      expect(Object.keys(listed.json()).toSorted()).toEqual(["active_count", "project_limit", "projects"]);
       expect(() => projectListResponseSchema.parse(listed.json())).not.toThrow();
       expect(listed.json()).toMatchObject({
         projects: [{ id: projectId, status: "active" }],
         active_count: 1,
         project_limit: 5,
+      });
+
+      const versionedList = await app.inject({
+        method: "GET",
+        url: "/api/v2/projects?limit=50",
+        headers: { cookie: ownerA.cookie },
+      });
+      expect(versionedList.statusCode).toBe(200);
+      expect(() => projectListResponseSchema.parse(versionedList.json())).not.toThrow();
+      expect(versionedList.json()).toMatchObject({
+        default_project: { id: projectId },
+        next_cursor: null,
       });
 
       const archived = await app.inject({

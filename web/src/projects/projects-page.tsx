@@ -33,7 +33,7 @@ export function ProjectsPage() {
   const load = useCallback(async () => {
     setLoadError(false);
     try {
-      setData(await api.query("/api/v1/projects?limit=50", projectListResponseSchema));
+      setData(await api.query("/api/v2/projects?limit=50", projectListResponseSchema));
     } catch {
       setLoadError(true);
     }

@@ -260,6 +260,26 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
         projects: result.projects.map(publicProject),
         active_count: result.activeCount,
         project_limit: result.projectLimit,
+      });
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.get("/api/v2/projects", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const query = parseProjectListQuery(request.query);
+    if (query === null) return invalidRequest(request, reply);
+    try {
+      const result = await projectService.list({
+        ownerUserId: request.webSession.userId,
+        limit: query.limit,
+        ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      });
+      return reply.send({
+        projects: result.projects.map(publicProject),
+        active_count: result.activeCount,
+        project_limit: result.projectLimit,
         default_project: result.defaultProject === null ? null : publicProject(result.defaultProject),
         next_cursor: result.nextCursor,
       });

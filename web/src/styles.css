@@ -238,6 +238,7 @@ p { margin: 0; }
 .project-switcher-menu { width: var(--radix-dropdown-menu-trigger-width); min-width: 14rem; }
 .project-switcher-menu [data-slot="dropdown-menu-item"] > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-switcher-menu__label { color: var(--muted-foreground); font-size: 0.72rem; }
+.project-switcher-menu__name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-switcher-menu__check { margin-left: auto; color: var(--primary) !important; }
 .workspace-nav { display: flex; flex-direction: column; gap: 0.35rem; }
 .workspace-nav__link { display: flex; min-height: 44px; align-items: center; gap: 0.85rem; padding: 0.7rem 0.85rem; border-radius: 0.55rem; color: var(--foreground); font-size: 0.9rem; font-weight: 500; transition: background-color 150ms ease, color 150ms ease; }

@@ -118,7 +118,7 @@ describe("AgentMesh owner vertical slice", () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = pathOf(input);
       if (path === "/api/v1/session") return json(sessionPayload);
-      if (path === "/api/v1/projects?limit=50" && init?.method !== "POST") {
+      if (path === "/api/v2/projects?limit=50" && init?.method !== "POST") {
         return json({ projects: [], active_count: 0, project_limit: 5 });
       }
       if (path === "/api/v1/projects" && init?.method === "POST") {
@@ -152,10 +152,10 @@ describe("AgentMesh owner vertical slice", () => {
       if (path === "/api/v1/session") return json(sessionPayload);
       if (path === `/api/v1/projects/${projectId}`) return json({ project });
       if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return json({ connections: [] });
-      if (path === "/api/v1/projects?limit=50") {
+      if (path === "/api/v2/projects?limit=50") {
         return json({ projects: [project], active_count: 2, project_limit: 5, next_cursor: "next-page" });
       }
-      if (path === "/api/v1/projects?limit=50&cursor=next-page") {
+      if (path === "/api/v2/projects?limit=50&cursor=next-page") {
         return json({ projects: [secondProject], active_count: 2, project_limit: 5 });
       }
       throw new Error(`Unexpected request: ${path}`);
@@ -170,8 +170,10 @@ describe("AgentMesh owner vertical slice", () => {
     const menu = await screen.findByRole("menu");
     const items = within(menu).getAllByRole("menuitem");
     expect(items[0]).toHaveTextContent("New project");
-    expect(within(menu).getByRole("menuitemradio", { name: "Second project" })).toBeInTheDocument();
+    expect(within(menu).queryByRole("menuitemradio", { name: "Second project" })).not.toBeInTheDocument();
     expect(within(menu).getByRole("menuitemradio", { name: "AgentMesh" })).toHaveAttribute("aria-checked", "true");
+    await user.click(within(menu).getByRole("menuitem", { name: "Load more projects" }));
+    expect(await within(menu).findByRole("menuitemradio", { name: "Second project" })).toBeInTheDocument();
 
     await user.click(items[0]!);
     expect(await screen.findByRole("dialog", { name: "New project" })).toBeInTheDocument();
@@ -184,7 +186,7 @@ describe("AgentMesh owner vertical slice", () => {
       if (path === "/api/v1/session") return json(sessionPayload);
       if (path === `/api/v1/projects/${projectId}`) return json({ project });
       if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return json({ connections: [] });
-      if (path === "/api/v1/projects?limit=50" && init?.method !== "POST") {
+      if (path === "/api/v2/projects?limit=50" && init?.method !== "POST") {
         return json({ projects: [project], active_count: 5, project_limit: 5 });
       }
       if (path === "/api/v1/projects" && init?.method === "POST") return error("INVALID_REQUEST", 400);
@@ -203,7 +205,7 @@ describe("AgentMesh owner vertical slice", () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const path = pathOf(input);
       if (path === "/api/v1/session") return json(sessionPayload);
-      if (path === "/api/v1/projects?limit=50") return json({ projects: [project], active_count: 1, project_limit: 5 });
+      if (path === "/api/v2/projects?limit=50") return json({ projects: [project], active_count: 1, project_limit: 5 });
       if (path === `/api/v1/projects/${projectId}/overview`) {
         return json({ overview: { project, agents: { online: 0, idle: 0, offline: 0, total: 0 }, messages: { total: 0, unacknowledged: 0 }, failures_last_24h: 0 } });
       }
@@ -224,7 +226,7 @@ describe("AgentMesh owner vertical slice", () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const path = pathOf(input);
       if (path === "/api/v1/session") return json(sessionPayload);
-      if (path === "/api/v1/projects?limit=50") {
+      if (path === "/api/v2/projects?limit=50") {
         return json({
           projects: [archivedProject],
           active_count: 1,
@@ -256,7 +258,7 @@ describe("AgentMesh owner vertical slice", () => {
       if (path === `/api/v1/projects/${secondProjectId}`) return json({ project: secondProject });
       if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return json({ connections: [] });
       if (path === `/api/v1/projects/${secondProjectId}/connections?limit=50`) return json({ connections: [] });
-      if (path === "/api/v1/projects?limit=50") {
+      if (path === "/api/v2/projects?limit=50") {
         return json({ projects: [project, secondProject], active_count: 2, project_limit: 5 });
       }
       throw new Error(`Unexpected request: ${path}`);
@@ -280,7 +282,7 @@ describe("AgentMesh owner vertical slice", () => {
       if (path === `/api/v1/projects/${archivedProjectId}`) return json({ project: archivedProject });
       if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return json({ connections: [] });
       if (path === `/api/v1/projects/${archivedProjectId}/connections?limit=50`) return json({ connections: [] });
-      if (path === "/api/v1/projects?limit=50") {
+      if (path === "/api/v2/projects?limit=50") {
         return json({ projects: [project, archivedProject], active_count: 1, project_limit: 5 });
       }
       throw new Error(`Unexpected request: ${path}`);
@@ -304,7 +306,7 @@ describe("AgentMesh owner vertical slice", () => {
       if (path === "/api/v1/session") return Promise.resolve(json(sessionPayload));
       if (path === `/api/v1/projects/${projectId}`) return Promise.resolve(json({ project }));
       if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return Promise.resolve(json({ connections: [] }));
-      if (path === "/api/v1/projects?limit=50") return Promise.resolve(json({ projects: [project], active_count: 1, project_limit: 5 }));
+      if (path === "/api/v2/projects?limit=50") return Promise.resolve(json({ projects: [project], active_count: 1, project_limit: 5 }));
       if (path === "/api/v1/projects" && init?.method === "POST") {
         createRequests += 1;
         return new Promise<Response>((resolve) => { resolveCreate = resolve; });

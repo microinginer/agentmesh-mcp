@@ -151,39 +151,52 @@ function ProjectSwitcher({ projectId, projectName = "Projects" }: { projectId?: 
   const [data, setData] = useState<ProjectListResponse | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const loadGeneration = useRef(0);
 
   const loadProjects = useCallback(async () => {
     const generation = ++loadGeneration.current;
     setLoadFailed(false);
     try {
-      const first = await api.query("/api/v1/projects?limit=50", projectListResponseSchema);
-      const projects = [...first.projects];
-      const seenCursors = new Set<string>();
-      let cursor = first.next_cursor;
-      while (cursor !== null && !seenCursors.has(cursor)) {
-        seenCursors.add(cursor);
-        const page = await api.query(
-          `/api/v1/projects?limit=50&cursor=${encodeURIComponent(cursor)}`,
-          projectListResponseSchema,
-        );
-        projects.push(...page.projects);
-        cursor = page.next_cursor;
-      }
+      const first = await api.query("/api/v2/projects?limit=50", projectListResponseSchema);
       if (generation !== loadGeneration.current) return;
-      setData({ ...first, projects, next_cursor: null });
+      setData(first);
+      setNextCursor(first.next_cursor);
     } catch {
       if (generation !== loadGeneration.current) return;
       setLoadFailed(true);
     }
   }, [api]);
 
+  const loadMoreProjects = useCallback(async () => {
+    if (nextCursor === null || loadingMore) return;
+    setLoadingMore(true);
+    setLoadFailed(false);
+    try {
+      const page = await api.query(
+        `/api/v2/projects?limit=50&cursor=${encodeURIComponent(nextCursor)}`,
+        projectListResponseSchema,
+      );
+      setData((current) => current === null ? page : {
+        ...current,
+        projects: [...current.projects, ...page.projects],
+        next_cursor: page.next_cursor,
+      });
+      setNextCursor(page.next_cursor);
+    } catch {
+      setLoadFailed(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [api, loadingMore, nextCursor]);
+
   const activeProjects = data?.projects.filter((project) => project.status === "active") ?? [];
   const archivedProjects = data?.projects.filter((project) => project.status === "archived") ?? [];
 
   return (
     <>
-      <DropdownMenu onOpenChange={(open) => { if (open) void loadProjects(); }}>
+      <DropdownMenu onOpenChange={(open) => { if (open && data === null) void loadProjects(); }}>
         <DropdownMenuTrigger asChild>
           <Button type="button" variant="outline" className="project-switcher" aria-label={`Current project: ${projectName}`}>
             <FolderKanbanIcon />
@@ -206,7 +219,7 @@ function ProjectSwitcher({ projectId, projectName = "Projects" }: { projectId?: 
                 {activeProjects.map((project) => (
                   <DropdownMenuRadioItem key={project.id} value={project.id} onSelect={() => navigate(projectDestination(location.pathname, project.id))}>
                     <FolderKanbanIcon />
-                    <span>{project.name}</span>
+                    <span className="project-switcher-menu__name">{project.name}</span>
                     {project.id === projectId ? <CheckIcon className="project-switcher-menu__check" aria-hidden="true" /> : null}
                   </DropdownMenuRadioItem>
                 ))}
@@ -222,12 +235,23 @@ function ProjectSwitcher({ projectId, projectName = "Projects" }: { projectId?: 
                   {archivedProjects.map((project) => (
                     <DropdownMenuRadioItem key={project.id} value={project.id} onSelect={() => navigate(projectDestination(location.pathname, project.id))}>
                       <FolderKanbanIcon />
-                      <span>{project.name}</span>
+                      <span className="project-switcher-menu__name">{project.name}</span>
                       {project.id === projectId ? <CheckIcon className="project-switcher-menu__check" aria-hidden="true" /> : null}
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
               </DropdownMenuGroup>
+            </>
+          )}
+          {nextCursor === null ? null : (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem disabled={loadingMore} onSelect={(event) => {
+                event.preventDefault();
+                void loadMoreProjects();
+              }}>
+                {loadingMore ? "Loading more projects…" : "Load more projects"}
+              </DropdownMenuItem>
             </>
           )}
         </DropdownMenuContent>
