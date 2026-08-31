@@ -2,6 +2,7 @@ import { createHash, createHmac } from "node:crypto";
 import { isIP } from "node:net";
 
 import proxyAddr from "@fastify/proxy-addr";
+import ipaddr from "ipaddr.js";
 import { z } from "zod";
 
 const environmentSchema = z.object({
@@ -164,6 +165,53 @@ function parseRateLimit(value: string | undefined, field: string, defaultValue: 
   return isBlank(value) ? defaultValue : parseBoundedInteger(value ?? "", field, 1, 100_000);
 }
 
+interface Ipv4Interval {
+  start: number;
+  end: number;
+}
+
+const IPV4_MAX = 0xffff_ffff;
+const IPV4_MAPPED_BASE = ipaddr.IPv6.parse("::ffff:0:0");
+
+function ipv4Number(address: ipaddr.IPv4): number {
+  return address.octets.reduce((value, octet) => (value * 256) + octet, 0);
+}
+
+function ipv4Interval(address: ipaddr.IPv4, prefix: number): Ipv4Interval {
+  const blockSize = 2 ** (32 - prefix);
+  const start = Math.floor(ipv4Number(address) / blockSize) * blockSize;
+  return { start, end: start + blockSize - 1 };
+}
+
+function ipv4Coverage(entry: string): Ipv4Interval | null {
+  const separator = entry.indexOf("/");
+  const address = ipaddr.parse(separator === -1 ? entry : entry.slice(0, separator));
+  const prefix = separator === -1
+    ? (address.kind() === "ipv4" ? 32 : 128)
+    : Number(entry.slice(separator + 1));
+
+  if (address instanceof ipaddr.IPv4) return ipv4Interval(address, prefix);
+  if (prefix <= 96) {
+    return IPV4_MAPPED_BASE.match(address, prefix) ? { start: 0, end: IPV4_MAX } : null;
+  }
+  if (!address.isIPv4MappedAddress()) return null;
+  return ipv4Interval(address.toIPv4Address(), prefix - 96);
+}
+
+function trustsEveryIpv4Address(entries: readonly string[]): boolean {
+  const intervals = entries
+    .map(ipv4Coverage)
+    .filter((interval): interval is Ipv4Interval => interval !== null)
+    .toSorted((left, right) => left.start - right.start || left.end - right.end);
+  let coveredThrough = -1;
+  for (const interval of intervals) {
+    if (interval.start > coveredThrough + 1) return false;
+    coveredThrough = Math.max(coveredThrough, interval.end);
+    if (coveredThrough === IPV4_MAX) return true;
+  }
+  return false;
+}
+
 function parseTrustedProxies(value: string | undefined): string[] {
   if (isBlank(value)) return [];
   const entries = (value ?? "").split(",").map((entry) => entry.trim());
@@ -187,16 +235,15 @@ function parseTrustedProxies(value: string | undefined): string[] {
         throw new Error("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
       }
     }
-    try {
-      const trust = proxyAddr.compile([entry]);
-      if (trust("0.0.0.0", 0) && trust("255.255.255.255", 0)) {
-        throw new Error("semantically global IPv4 trust");
-      }
-    } catch {
-      throw new Error("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
-    }
   }
-  return [...new Set(entries)];
+  const uniqueEntries = [...new Set(entries)];
+  try {
+    proxyAddr.compile(uniqueEntries);
+    if (trustsEveryIpv4Address(uniqueEntries)) throw new Error("semantically global IPv4 trust");
+  } catch {
+    throw new Error("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
+  }
+  return uniqueEntries;
 }
 
 function parseOperatorGitHubIds(value: string): ReadonlySet<string> {

@@ -327,6 +327,7 @@ describe("hosted release security controls", () => {
     "2001:db8:42::2",
     "2001:db8:42::/64",
     "::ffff:192.0.2.0/120",
+    "0.0.0.0/1,::ffff:128.0.0.0/98",
   ])("ignores spoofed forwarding headers from an untrusted direct IPv4 source with accepted proxy setting %s", async (trustedProxy) => {
     const logged: unknown[] = [];
     const socketIp = "203.0.113.90";
