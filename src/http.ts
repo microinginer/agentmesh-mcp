@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/node";
 import type { AuthInfo } from "@modelcontextprotocol/server";
 
+import { registerControlRoutes } from "./control/routes.js";
 import type { AgentMeshDatabase } from "./db/client.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import type { AdminRouteDependencies } from "./admin/routes.js";
@@ -61,6 +62,7 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
   if (dependencies.web !== undefined && dependencies.web !== null) {
     app.register(fastifyCookie);
     registerWebAuthRoutes(app, dependencies.web);
+    registerControlRoutes(app, dependencies.web);
   }
 
   app.post("/mcp", async (request, reply) => {
