@@ -273,19 +273,12 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
 
   app.get("/auth/github/callback", async (request, reply) => {
     reply.header("Cache-Control", noStore);
+    await dependencies.rateLimits?.oauthCallback(request, reply);
+    if (reply.sent) return;
     reply.clearCookie(names.oauth, commonCookieOptions);
     const rawCookies = rawCookieFields(request);
     const attemptCookies = cookieCandidates(rawCookies, names.oauth);
     const attempts = await Promise.all(attemptCookies.values.map((value) => oauth.consume(value)));
-    await dependencies.rateLimits?.oauthCallback(request, reply);
-    if (reply.sent) {
-      await dependencies.auditService.recordBestEffort({
-        userId: null,
-        eventType: "auth.login_failed",
-        metadata: { provider: "github" },
-      });
-      return;
-    }
     const attempt = attempts[0];
     if (rawCookies.repeated || attemptCookies.invalid || attemptCookies.values.length !== 1
       || attempt === undefined || attempt === null) {

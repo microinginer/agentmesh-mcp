@@ -8,7 +8,7 @@ import { createAuditService } from "../src/audit/service.js";
 import { loadConfig, type RateLimitConfig, type WebAuthConfig } from "../src/config.js";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { oauthAttempts, oauthIdentities, projects, users } from "../src/db/schema.js";
+import { auditEvents, oauthAttempts, oauthIdentities, projects, users } from "../src/db/schema.js";
 import { buildHttpApp } from "../src/http.js";
 import { createSafeLogger } from "../src/logging.js";
 import { createProjectService } from "../src/projects/service.js";
@@ -456,6 +456,126 @@ describe("hosted release security controls", () => {
       }
     } finally {
       await fixture.app.close();
+    }
+  });
+
+  it("rejects an exhausted callback bucket before any durable or identity work", async () => {
+    const clock = createTestClock(fixedNow);
+    const config = webConfig();
+    const sessionService = createWebSessionService({
+      db: database.db,
+      keys: deriveWebAuthKeys(config.authKey),
+      clock: clock.now,
+    });
+    const identityService = createIdentityService({ db: database.db, clock: clock.now });
+    const auditService = createAuditService({ db: database.db, clock: clock.now });
+    const transaction = vi.spyOn(database.db, "transaction");
+    const audit = vi.spyOn(auditService, "recordBestEffort");
+    const authenticate = vi.spyOn(sessionService, "authenticate");
+    const issue = vi.spyOn(sessionService, "issue");
+    const rotate = vi.spyOn(sessionService, "rotateForReauthentication");
+    const identity = vi.spyOn(identityService, "upsertGitHub");
+    const exchangeCode = vi.fn(async () => "provider-token-must-not-be-created");
+    const fetchProfile = vi.fn(async () => ({
+      id: "99100",
+      login: "must-not-be-fetched",
+      name: null,
+      avatarUrl: null,
+    }));
+    const app = buildHttpApp({
+      db: database.db,
+      signingKey,
+      projectService: createProjectService({ db: database.db, clock: clock.now }),
+      host: "127.0.0.1",
+      allowedHosts: ["127.0.0.1", "localhost"],
+      admin: null,
+      logger: { write: () => {} },
+      rateLimits: { ...testLimits, oauthStart: 5 },
+      rateLimitStore: CapturingStore,
+      web: {
+        db: database.db,
+        config,
+        githubClient: {
+          authorizationUrl: () => new URL("https://github.example.test/authorize"),
+          exchangeCode,
+          fetchProfile,
+        },
+        identityService,
+        sessionService,
+        auditService,
+        clock: clock.now,
+      },
+    });
+    try {
+      const candidateCookies: string[] = [];
+      for (let index = 0; index < 4; index += 1) {
+        const started = await app.inject({ method: "GET", url: "/auth/github/start" });
+        expect(started.statusCode).toBe(302);
+        const rawSetCookie = started.headers["set-cookie"];
+        const selected = Array.isArray(rawSetCookie) ? rawSetCookie[0] : rawSetCookie;
+        const pair = selected?.split(";", 1)[0];
+        expect(pair).toMatch(/^agentmesh_oauth=v1\.[A-Za-z0-9_.-]+$/);
+        candidateCookies.push(pair ?? "");
+      }
+      for (let index = 0; index < 5; index += 1) {
+        const admitted = await app.inject({
+          method: "GET",
+          url: "/auth/github/callback?error=access_denied",
+        });
+        expect(admitted.statusCode).toBe(303);
+      }
+
+      transaction.mockClear();
+      audit.mockClear();
+      authenticate.mockClear();
+      issue.mockClear();
+      rotate.mockClear();
+      identity.mockClear();
+      exchangeCode.mockClear();
+      fetchProfile.mockClear();
+      const auditsBefore = await database.db.select({ id: auditEvents.id }).from(auditEvents);
+
+      const limited = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=${"c".repeat(32)}&state=${"s".repeat(43)}`,
+        headers: { cookie: candidateCookies.join("; ") },
+      });
+
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json()).toEqual({
+        error: {
+          code: "RATE_LIMITED",
+          message: "Too many requests",
+          request_id: expect.any(String),
+        },
+      });
+      expectSecurityHeaders(limited.headers);
+      expect({
+        setCookie: limited.headers["set-cookie"],
+        transactions: transaction.mock.calls.length,
+        audits: audit.mock.calls.length,
+        exchanges: exchangeCode.mock.calls.length,
+        profiles: fetchProfile.mock.calls.length,
+        identities: identity.mock.calls.length,
+        authentications: authenticate.mock.calls.length,
+        issues: issue.mock.calls.length,
+        rotations: rotate.mock.calls.length,
+      }).toEqual({
+        setCookie: undefined,
+        transactions: 0,
+        audits: 0,
+        exchanges: 0,
+        profiles: 0,
+        identities: 0,
+        authentications: 0,
+        issues: 0,
+        rotations: 0,
+      });
+      expect(await database.db.select({ consumedAt: oauthAttempts.consumedAt }).from(oauthAttempts))
+        .toEqual(Array.from({ length: 4 }, () => ({ consumedAt: null })));
+      expect(await database.db.select({ id: auditEvents.id }).from(auditEvents)).toHaveLength(auditsBefore.length);
+    } finally {
+      await app.close();
     }
   });
 

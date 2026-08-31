@@ -3,6 +3,8 @@ import { Pool } from "pg";
 
 import * as schema from "./schema.js";
 
+export const DATABASE_ACQUISITION_TIMEOUT_MS = 500;
+
 export type AgentMeshDatabase = NodePgDatabase<typeof schema>;
 
 export interface DatabaseConnection {
@@ -11,7 +13,10 @@ export interface DatabaseConnection {
 }
 
 export function createDatabase(connectionString: string): DatabaseConnection {
-  const pool = new Pool({ connectionString });
+  const pool = new Pool({
+    connectionString,
+    connectionTimeoutMillis: DATABASE_ACQUISITION_TIMEOUT_MS,
+  });
   return {
     pool,
     db: drizzle({ client: pool, schema }),

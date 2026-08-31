@@ -67,7 +67,7 @@ function bearerFromHeader(header: string | undefined): string | null {
 }
 
 const API_CONTENT_SECURITY_POLICY = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
-const READINESS_QUERY_TIMEOUT_MS = 1_000;
+const READINESS_QUERY_TIMEOUT_MS = 750;
 const READINESS_TOTAL_TIMEOUT_MS = 1_500;
 
 function bounded<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -97,22 +97,38 @@ function databaseReadinessCheck(db: AgentMeshDatabase): () => Promise<boolean> {
 
   return async () => {
     try {
-      return await bounded(db.transaction(async (transaction) => {
+      return await db.transaction(async (transaction) => {
         await transaction.execute(sql.raw(`SET LOCAL statement_timeout = '${READINESS_QUERY_TIMEOUT_MS}ms'`));
-        await transaction.execute(sql`SELECT 1 AS database_ready`);
         const migration = await transaction.execute(sql`
-          SELECT EXISTS (
-            SELECT 1
-            FROM drizzle.__drizzle_migrations
-            WHERE hash = ${expected.hash}
-              AND created_at = ${expected.folderMillis}
-          ) AS migration_current
+          SELECT
+            1 AS database_ready,
+            EXISTS (
+              SELECT 1
+              FROM drizzle.__drizzle_migrations
+              WHERE hash = ${expected.hash}
+                AND created_at = ${expected.folderMillis}
+            ) AS migration_current
         `);
         return migration.rows[0]?.migration_current === true;
-      }), READINESS_TOTAL_TIMEOUT_MS);
+      });
     } catch {
       return false;
     }
+  };
+}
+
+function singleFlight(check: () => Promise<boolean>): () => Promise<boolean> {
+  let active: Promise<boolean> | null = null;
+  return () => {
+    if (active !== null) return active;
+    const flight = Promise.resolve()
+      .then(check)
+      .catch(() => false)
+      .finally(() => {
+        if (active === flight) active = null;
+      });
+    active = flight;
+    return flight;
   };
 }
 
@@ -166,7 +182,7 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
     }
   });
 
-  const ready = dependencies.readinessCheck ?? databaseReadinessCheck(dependencies.db);
+  const ready = singleFlight(dependencies.readinessCheck ?? databaseReadinessCheck(dependencies.db));
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/ready", async (_request, reply) => {
     let available = false;

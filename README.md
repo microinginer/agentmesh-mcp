@@ -45,7 +45,9 @@ values remain forbidden.
 `/health` reports process liveness without touching PostgreSQL. `/ready` is the
 container healthcheck and returns success only when PostgreSQL responds and the
 database contains this image's latest migration. A database with newer additive
-migrations remains ready for rollback compatibility.
+migrations remains ready for rollback compatibility. Database pool acquisition
+fails closed after 500 ms so saturated callers do not accumulate unbounded
+waiters; concurrent readiness requests share one bounded database probe.
 
 ## Optional GitHub-hosted control plane
 
