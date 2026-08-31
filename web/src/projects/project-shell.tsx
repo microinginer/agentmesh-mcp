@@ -9,6 +9,7 @@ import {
   MenuIcon,
   MessageCircleIcon,
   MoonIcon,
+  SettingsIcon,
   SunIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -113,10 +114,11 @@ function Navigation({ projectId }: { projectId?: string }) {
   const base = `/app/projects/${projectId}`;
   const items = [
     { to: base, label: "Overview", icon: LayoutDashboardIcon, exact: true },
-    { to: `${base}#agents`, label: "Agents", icon: BotIcon },
-    { to: `${base}#messages`, label: "Messages", icon: MessageCircleIcon },
-    { to: `${base}#activity`, label: "Activity", icon: ActivityIcon },
+    { to: `${base}/agents`, label: "Agents", icon: BotIcon },
+    { to: `${base}/messages`, label: "Messages", icon: MessageCircleIcon },
+    { to: `${base}/activity`, label: "Activity", icon: ActivityIcon },
     { to: `${base}/connections`, label: "Connections", icon: LinkIcon },
+    { to: `${base}/settings`, label: "Settings", icon: SettingsIcon },
   ];
   return (
     <nav className="workspace-nav" aria-label="Project navigation">

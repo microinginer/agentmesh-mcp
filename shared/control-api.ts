@@ -115,6 +115,39 @@ export const eventListResponseSchema = z.object({
   has_more: z.boolean(),
 }).strict();
 
+const messagePartySchema = z.object({
+  id: uuid,
+  name: z.string().min(1).max(255),
+}).strict();
+
+export const messageListItemSchema = z.object({
+  sequence: z.number().int().positive(),
+  id: uuid,
+  sender: messagePartySchema,
+  recipient: messagePartySchema,
+  preview: z.string().max(161),
+  created_at: timestamp,
+  acknowledged_at: timestamp.nullable(),
+}).strict();
+
+export const messageListResponseSchema = z.object({
+  items: z.array(messageListItemSchema).max(100),
+  next_cursor: z.string().max(684).nullable(),
+  has_more: z.boolean(),
+}).strict();
+
+export const messageDetailSchema = z.object({
+  sequence: z.number().int().positive(),
+  id: uuid,
+  sender: messagePartySchema,
+  recipient: messagePartySchema,
+  text: z.string().max(16_384),
+  created_at: timestamp,
+  acknowledged_at: timestamp.nullable(),
+}).strict();
+
+export const messageDetailResponseSchema = z.object({ message: messageDetailSchema }).strict();
+
 export const connectionListResponseSchema = z.object({
   connections: z.array(connectionSchema).max(100),
 }).strict();
@@ -140,6 +173,9 @@ export type Agent = z.infer<typeof agentSchema>;
 export type AgentListResponse = z.infer<typeof agentListResponseSchema>;
 export type ActivityEvent = z.infer<typeof eventSchema>;
 export type EventListResponse = z.infer<typeof eventListResponseSchema>;
+export type MessageListItem = z.infer<typeof messageListItemSchema>;
+export type MessageListResponse = z.infer<typeof messageListResponseSchema>;
+export type MessageDetail = z.infer<typeof messageDetailSchema>;
 export type Connection = z.infer<typeof connectionSchema>;
 export type ConnectionListResponse = z.infer<typeof connectionListResponseSchema>;
 export type IssueConnectionResponse = z.infer<typeof issueConnectionResponseSchema>;
