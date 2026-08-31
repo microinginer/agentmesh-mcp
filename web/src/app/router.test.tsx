@@ -11,8 +11,8 @@ describe("AgentMesh application router", () => {
   it("renders the restrained public shell", () => {
     render(<TestApp />);
 
-    expect(screen.getByRole("heading", { name: "AgentMesh" })).toBeInTheDocument();
-    expect(screen.getByText("Your agents, working as one.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Your agents, working as one." })).toBeInTheDocument();
+    expect(screen.getByText("AgentMesh")).toBeInTheDocument();
   });
 
   it("provides an isolated full-page navigation spy", () => {
@@ -23,12 +23,23 @@ describe("AgentMesh application router", () => {
     expect(window.location.assign).toHaveBeenCalledWith("/auth/github/start");
   });
 
-  it.each([
-    ["/app/projects/example", "AgentMesh application"],
-    ["/ops/projects/example", "AgentMesh operations"],
-  ])("routes %s into the expected product surface", (path, label) => {
-    render(<TestApp initialEntries={[path]} />);
+  it("gates the owner workspace behind the server session", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      error: {
+        code: "AUTH_REQUIRED",
+        message: "Authentication is required",
+        request_id: "router-test-request",
+      },
+    }, { status: 401 })));
 
-    expect(screen.getByRole("main", { name: label })).toBeInTheDocument();
+    render(<TestApp initialEntries={["/app"]} />);
+
+    expect(await screen.findByRole("heading", { name: "Sign in to AgentMesh" })).toBeInTheDocument();
+  });
+
+  it("keeps the operator surface isolated", () => {
+    render(<TestApp initialEntries={["/ops/projects/example"]} />);
+
+    expect(screen.getByRole("main", { name: "AgentMesh operations" })).toBeInTheDocument();
   });
 });

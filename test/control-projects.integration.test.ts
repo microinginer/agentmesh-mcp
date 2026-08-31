@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { and, count, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { projectListResponseSchema, projectResponseSchema } from "../shared/control-api.js";
 import { createAuditService, type AuditService } from "../src/audit/service.js";
 import type { WebAuthConfig } from "../src/config.js";
 import { createControlProjectService } from "../src/control/project-service.js";
@@ -435,6 +436,7 @@ describe("owner project HTTP routes", () => {
       });
       expect(created.statusCode).toBe(201);
       expect(created.headers["cache-control"]).toBe("no-store");
+      expect(() => projectResponseSchema.parse(created.json())).not.toThrow();
       expect(created.json()).toMatchObject({
         project: {
           name: "Alpha",
@@ -471,6 +473,7 @@ describe("owner project HTTP routes", () => {
       });
       expect(listed.statusCode).toBe(200);
       expect(listed.headers["cache-control"]).toBe("no-store");
+      expect(() => projectListResponseSchema.parse(listed.json())).not.toThrow();
       expect(listed.json()).toMatchObject({
         projects: [{ id: projectId, status: "active" }],
         active_count: 1,

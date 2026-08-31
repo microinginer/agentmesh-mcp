@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  connectionListResponseSchema,
+  connectionResponseSchema,
+  issueConnectionResponseSchema,
+} from "../shared/control-api.js";
 import { createAuditService, type AuditService } from "../src/audit/service.js";
 import type { WebAuthConfig } from "../src/config.js";
 import {
@@ -664,6 +669,7 @@ describe("connection HTTP routes", () => {
       });
       expect(issued.statusCode).toBe(201);
       expect(issued.headers["cache-control"]).toBe("no-store");
+      expect(() => issueConnectionResponseSchema.parse(issued.json())).not.toThrow();
       expect(issued.json()).toMatchObject({
         connection: { label: "Main Mac", status: "active" },
         secret_recoverable: true,
@@ -679,6 +685,7 @@ describe("connection HTTP routes", () => {
       });
       expect(replay.statusCode).toBe(201);
       expect(replay.headers["cache-control"]).toBe("no-store");
+      expect(() => issueConnectionResponseSchema.parse(replay.json())).not.toThrow();
       expect(replay.json()).toMatchObject({
         connection: { id: connectionId, label: "Main Mac" },
         secret: null,
@@ -692,6 +699,7 @@ describe("connection HTTP routes", () => {
       });
       expect(list.statusCode).toBe(200);
       expect(list.headers["cache-control"]).toBe("no-store");
+      expect(() => connectionListResponseSchema.parse(list.json())).not.toThrow();
       expect(list.json()).toEqual({ connections: [replay.json().connection] });
       expect(JSON.stringify(list.json())).not.toMatch(/digest|secret|am_proj_/i);
 
@@ -711,6 +719,7 @@ describe("connection HTTP routes", () => {
       });
       expect(revoked.statusCode).toBe(200);
       expect(revoked.headers["cache-control"]).toBe("no-store");
+      expect(() => connectionResponseSchema.parse(revoked.json())).not.toThrow();
       expect(revoked.json()).toMatchObject({
         connection: { id: connectionId, status: "revoked" },
       });

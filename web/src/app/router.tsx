@@ -1,24 +1,31 @@
-import { createBrowserRouter, type RouteObject } from "react-router";
+import { createBrowserRouter, type RouteObject } from "react-router-dom";
+
+import { AuthGate } from "@/auth/auth-gate";
+import { LandingPage } from "@/auth/landing-page";
+import { SessionProvider } from "@/auth/session-store";
+import { ConnectionsPage } from "@/connections/connections-page";
+import { ProjectOverviewPage } from "@/projects/project-overview-page";
+import { ProjectsPage } from "@/projects/projects-page";
+
+function AuthenticatedProduct() {
+  return (
+    <SessionProvider>
+      <AuthGate />
+    </SessionProvider>
+  );
+}
 
 export const appRoutes: RouteObject[] = [
+  { path: "/", element: <LandingPage /> },
   {
-    path: "/",
-    element: (
-      <main className="public-shell">
-        <div className="brand-mark" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
-        <h1>AgentMesh</h1>
-        <p className="public-shell__tagline">Your agents, working as one.</p>
-        <p className="public-shell__description">
-          Share project context, coordinate work, and keep every coding agent aligned.
-        </p>
-      </main>
-    ),
+    path: "/app",
+    element: <AuthenticatedProduct />,
+    children: [
+      { index: true, element: <ProjectsPage /> },
+      { path: "projects/:projectId", element: <ProjectOverviewPage /> },
+      { path: "projects/:projectId/connections", element: <ConnectionsPage /> },
+    ],
   },
-  { path: "/app/*", element: <main aria-label="AgentMesh application" /> },
   { path: "/ops/*", element: <main aria-label="AgentMesh operations" /> },
 ];
 

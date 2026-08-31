@@ -1,6 +1,5 @@
 import type { ReactElement, ReactNode } from "react";
-import { RouterProvider } from "react-router/dom";
-import { createMemoryRouter } from "react-router";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { vi, type Mock } from "vitest";
 
 import { appRoutes } from "../app/router";
@@ -9,12 +8,14 @@ import { Providers } from "../app/providers";
 export interface SessionResponse {
   user: {
     id: string;
-    github_login: string;
+    github_id: string;
+    login: string;
     display_name: string;
     avatar_url: string | null;
   };
-  csrf_token: string;
   operator: boolean;
+  authenticated_at: string;
+  csrf_token: string;
 }
 
 export interface MockedApiClient {
@@ -34,12 +35,14 @@ export interface TestAppProps {
 export const session: SessionResponse = {
   user: {
     id: "00000000-0000-4000-8000-000000000001",
-    github_login: "agentmesh-owner",
+    github_id: "101",
+    login: "agentmesh-owner",
     display_name: "AgentMesh Owner",
     avatar_url: "https://avatars.githubusercontent.com/u/1?v=4",
   },
-  csrf_token: "agentmesh-test-csrf-token-32-bytes-long",
   operator: false,
+  authenticated_at: "2026-08-31T10:00:00.000Z",
+  csrf_token: "agentmesh-test-csrf-token-32-bytes-long",
 };
 
 export const api: MockedApiClient = {

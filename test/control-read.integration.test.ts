@@ -4,6 +4,11 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import {
+  agentListResponseSchema,
+  eventListResponseSchema,
+  overviewResponseSchema,
+} from "../shared/control-api.js";
 import { createAuditService } from "../src/audit/service.js";
 import type { WebAuthConfig } from "../src/config.js";
 import { encodeAdminCursor } from "../src/admin/contracts.js";
@@ -391,6 +396,7 @@ describe("owner read HTTP routes", () => {
         url: `/api/v1/projects/${fixture.projectA}/agents`,
         headers: { cookie: cookieA },
       });
+      expect(() => agentListResponseSchema.parse(agentList.json())).not.toThrow();
       expect(agentList.json()).toMatchObject({
         items: expect.arrayContaining([
           expect.objectContaining({
@@ -404,6 +410,18 @@ describe("owner read HTTP routes", () => {
           expect.objectContaining({ id: fixture.agentA2, connection: null }),
         ]),
       });
+      const overview = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${fixture.projectA}/overview`,
+        headers: { cookie: cookieA },
+      });
+      expect(() => overviewResponseSchema.parse(overview.json())).not.toThrow();
+      const events = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${fixture.projectA}/events`,
+        headers: { cookie: cookieA },
+      });
+      expect(() => eventListResponseSchema.parse(events.json())).not.toThrow();
       expect(JSON.stringify(agentList.json())).not.toMatch(/token|digest/i);
 
       for (const cookie of [cookieB]) {
