@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TestApp } from "@/test/render";
 
 const projectId = "00000000-0000-4000-8000-000000000010";
+const secondProjectId = "00000000-0000-4000-8000-000000000011";
 const connectionA = "00000000-0000-4000-8000-000000000020";
 const connectionB = "00000000-0000-4000-8000-000000000021";
 const secret = "am_proj_test-only-one-time-secret";
@@ -30,6 +31,13 @@ const project = {
   archived_at: null,
   created_at: "2026-08-31T10:00:00.000Z",
   updated_at: "2026-08-31T10:00:00.000Z",
+};
+
+const secondProject = {
+  ...project,
+  id: secondProjectId,
+  name: "Second project",
+  description: "Another shared workspace",
 };
 
 const activeConnection = (id: string, label: string) => ({
@@ -95,7 +103,7 @@ describe("AgentMesh owner vertical slice", () => {
     expect(await screen.findByRole("heading", { name: "Create your first project" })).toBeInTheDocument();
   });
 
-  it("creates the first project with one UUID and routes directly to connection creation", async () => {
+  it("creates the first project with one UUID and opens its overview without a connection dialog", async () => {
     const user = userEvent.setup();
     let createKey: string | null = null;
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -108,7 +116,11 @@ describe("AgentMesh owner vertical slice", () => {
         createKey = new Headers(init.headers).get("Idempotency-Key");
         return json({ project }, 201);
       }
-      if (path === `/api/v1/projects/${projectId}`) return json({ project });
+      if (path === `/api/v1/projects/${projectId}/overview`) {
+        return json({ overview: { project, agents: { online: 0, idle: 0, offline: 0, total: 0 }, messages: { total: 0, unacknowledged: 0 }, failures_last_24h: 0 } });
+      }
+      if (path === `/api/v1/projects/${projectId}/agents?limit=50`) return json({ items: [], next_cursor: null });
+      if (path === `/api/v1/projects/${projectId}/events?limit=20`) return json({ items: [], next_cursor: null, has_more: false });
       if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return json({ connections: [] });
       throw new Error(`Unexpected request: ${path}`);
     });
@@ -119,16 +131,47 @@ describe("AgentMesh owner vertical slice", () => {
     await user.type(screen.getByLabelText("Description"), "Shared coordination workspace");
     await user.click(screen.getByRole("button", { name: "Create project" }));
 
-    expect(await screen.findByRole("dialog", { name: "New connection" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Connections", hidden: true })).toBeInTheDocument();
+    expect(await screen.findByText("Coordinate agents without stepping on each other.")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New connection" })).not.toBeInTheDocument();
     expect(createKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   });
 
-  it("shows project limits without allowing another create attempt", async () => {
+  it("uses the project switcher menu for project creation and keeps New project first", async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const path = pathOf(input);
+      if (path === "/api/v1/session") return json(sessionPayload);
+      if (path === `/api/v1/projects/${projectId}`) return json({ project });
+      if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return json({ connections: [] });
+      if (path === "/api/v1/projects?limit=50") {
+        return json({ projects: [project, secondProject], active_count: 2, project_limit: 5 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    render(<TestApp initialEntries={[`/app/projects/${projectId}/connections`]} />);
+    expect(await screen.findByRole("heading", { name: "Connections" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New connection" })).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole("button", { name: "Current project: AgentMesh" })[0]!);
+    const menu = await screen.findByRole("menu");
+    const items = within(menu).getAllByRole("menuitem");
+    expect(items[0]).toHaveTextContent("New project");
+    expect(within(menu).getByRole("menuitem", { name: "Second project" })).toBeInTheDocument();
+
+    await user.click(items[0]!);
+    expect(await screen.findByRole("dialog", { name: "New project" })).toBeInTheDocument();
+  });
+
+  it("shows project limits in the New project dialog without allowing another create attempt", async () => {
+    const user = userEvent.setup();
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = pathOf(input);
       if (path === "/api/v1/session") return json(sessionPayload);
-      if (path === "/api/v1/projects?limit=50") {
+      if (path === `/api/v1/projects/${projectId}`) return json({ project });
+      if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return json({ connections: [] });
+      if (path === "/api/v1/projects?limit=50" && init?.method !== "POST") {
         return json({ projects: [project], active_count: 5, project_limit: 5 });
       }
       if (path === "/api/v1/projects" && init?.method === "POST") return error("INVALID_REQUEST", 400);
@@ -136,25 +179,56 @@ describe("AgentMesh owner vertical slice", () => {
     });
     vi.stubGlobal("fetch", fetcher);
 
-    render(<TestApp initialEntries={["/app"]} />);
+    render(<TestApp initialEntries={[`/app/projects/${projectId}/connections`]} />);
+    await user.click((await screen.findAllByRole("button", { name: "Current project: AgentMesh" }))[0]!);
+    await user.click(await screen.findByRole("menuitem", { name: "New project" }));
     expect(await screen.findByText("5 of 5 active projects")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create project" })).toBeDisabled();
   });
 
-  it("keeps self-hosted project limit zero unlimited", async () => {
+  it("opens an existing workspace from the project index instead of showing the Projects page", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const path = pathOf(input);
       if (path === "/api/v1/session") return json(sessionPayload);
-      if (path === "/api/v1/projects?limit=50") {
-        return json({ projects: [project], active_count: 101, project_limit: 0 });
+      if (path === "/api/v1/projects?limit=50") return json({ projects: [project], active_count: 1, project_limit: 5 });
+      if (path === `/api/v1/projects/${projectId}/overview`) {
+        return json({ overview: { project, agents: { online: 0, idle: 0, offline: 0, total: 0 }, messages: { total: 0, unacknowledged: 0 }, failures_last_24h: 0 } });
       }
+      if (path === `/api/v1/projects/${projectId}/agents?limit=50`) return json({ items: [], next_cursor: null });
+      if (path === `/api/v1/projects/${projectId}/events?limit=20`) return json({ items: [], next_cursor: null, has_more: false });
+      if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return json({ connections: [] });
       throw new Error(`Unexpected request: ${path}`);
     });
     vi.stubGlobal("fetch", fetcher);
 
     render(<TestApp initialEntries={["/app"]} />);
-    expect(await screen.findByText("101 active projects · Unlimited")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create project" })).toBeEnabled();
+
+    expect(await screen.findByText("Coordinate agents without stepping on each other.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Projects" })).not.toBeInTheDocument();
+  });
+
+  it("switches active projects while preserving the current section", async () => {
+    const user = userEvent.setup();
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const path = pathOf(input);
+      if (path === "/api/v1/session") return json(sessionPayload);
+      if (path === `/api/v1/projects/${projectId}`) return json({ project });
+      if (path === `/api/v1/projects/${secondProjectId}`) return json({ project: secondProject });
+      if (path === `/api/v1/projects/${projectId}/connections?limit=50`) return json({ connections: [] });
+      if (path === `/api/v1/projects/${secondProjectId}/connections?limit=50`) return json({ connections: [] });
+      if (path === "/api/v1/projects?limit=50") {
+        return json({ projects: [project, secondProject], active_count: 2, project_limit: 5 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    render(<TestApp initialEntries={[`/app/projects/${projectId}/connections`]} />);
+    await user.click((await screen.findAllByRole("button", { name: "Current project: AgentMesh" }))[0]!);
+    await user.click(await screen.findByRole("menuitem", { name: "Second project" }));
+
+    expect((await screen.findAllByRole("button", { name: "Current project: Second project" })).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Connections" })).toBeInTheDocument();
   });
 
   it("starts independent overview reads together and renders live summary, agents, events, and connections", async () => {

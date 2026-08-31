@@ -232,9 +232,13 @@ p { margin: 0; }
 .workspace-shell { display: grid; min-height: 100vh; grid-template-columns: 240px minmax(0, 1fr); background: var(--background); }
 .workspace-rail { position: sticky; top: 0; display: flex; height: 100vh; flex-direction: column; gap: 1.5rem; padding: 1.75rem 1rem 1rem; border-right: 1px solid var(--border); }
 .workspace-rail > a:first-child { padding: 0 0.65rem; }
-.project-switcher { display: flex; min-height: 44px; align-items: center; gap: 0.65rem; padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: 0.55rem; font-size: 0.88rem; font-weight: 500; }
+.project-switcher { display: flex; width: 100%; min-height: 44px; justify-content: flex-start; gap: 0.65rem; padding: 0.65rem 0.75rem; border-radius: 0.55rem; font-size: 0.88rem; font-weight: 500; }
 .project-switcher svg { width: 1rem; height: 1rem; }
 .project-switcher span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-switcher-menu { width: var(--radix-dropdown-menu-trigger-width); min-width: 14rem; }
+.project-switcher-menu [data-slot="dropdown-menu-item"] > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-switcher-menu__label { color: var(--muted-foreground); font-size: 0.72rem; }
+.project-switcher-menu__check { margin-left: auto; color: var(--primary) !important; }
 .workspace-nav { display: flex; flex-direction: column; gap: 0.35rem; }
 .workspace-nav__link { display: flex; min-height: 44px; align-items: center; gap: 0.85rem; padding: 0.7rem 0.85rem; border-radius: 0.55rem; color: var(--foreground); font-size: 0.9rem; font-weight: 500; transition: background-color 150ms ease, color 150ms ease; }
 .workspace-nav__link svg { width: 1.1rem; height: 1.1rem; stroke-width: 1.8; }
@@ -259,6 +263,9 @@ p { margin: 0; }
 .projects-page__header p { max-width: 34rem; color: var(--muted-foreground); line-height: 1.55; }
 .project-form { display: flex; width: min(100%, 34rem); flex-direction: column; gap: 1.25rem; margin: 0 auto; }
 .project-form textarea { min-height: 6rem; resize: vertical; }
+.project-create-dialog { max-width: min(34rem, calc(100% - 2rem)); }
+.project-dialog-form { display: flex; flex-direction: column; gap: 1.25rem; }
+.project-dialog-form textarea { min-height: 6rem; resize: vertical; }
 .project-limit { color: var(--muted-foreground); font-size: 0.78rem; text-align: center; }
 .project-list { margin: 2rem 0; border-block: 1px solid var(--border); }
 .project-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 1rem; min-height: 72px; padding: 0.8rem 0.2rem; border-bottom: 1px solid var(--border); }
@@ -335,7 +342,7 @@ p { margin: 0; }
 .message-route svg, .message-state svg { width: 0.85rem; height: 0.85rem; flex: 0 0 auto; }
 .data-row--message p { overflow: hidden; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
 .message-state { display: inline-flex; align-items: center; gap: 0.35rem; }
-.message-dialog { max-width: 48rem; }
+.message-dialog { max-width: min(48rem, calc(100% - 2rem)); }
 .message-body { max-height: 55vh; overflow: auto; padding: 1rem; border: 1px solid var(--border); border-radius: 0.6rem; background: var(--muted); font-family: var(--font-mono); font-size: 0.84rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .data-row--event { display: grid; min-height: 5.2rem; grid-template-columns: auto minmax(12rem, 1.2fr) minmax(10rem, 0.8fr) minmax(10rem, auto); align-items: center; gap: 1rem; }
 .row-icon--failure { color: var(--destructive); background: color-mix(in oklab, var(--destructive) 10%, transparent); }
@@ -360,7 +367,7 @@ p { margin: 0; }
 .connection-status--active { color: var(--success); background: color-mix(in oklab, var(--success) 9%, transparent); }
 .connection-status--expired { color: var(--warning); background: color-mix(in oklab, var(--warning) 10%, transparent); }
 .connection-status--revoked { color: var(--destructive); background: color-mix(in oklab, var(--destructive) 8%, transparent); }
-.connection-dialog { max-width: 42rem; }
+.connection-dialog { max-width: min(42rem, calc(100% - 2rem)); }
 .connection-create-form { display: flex; flex-direction: column; gap: 1.5rem; }
 .connection-dialog__success { display: grid; grid-template-columns: auto 1fr; align-items: center; text-align: left; }
 .connection-dialog__success > svg { width: 2rem; height: 2rem; color: var(--primary); }
@@ -385,8 +392,8 @@ p { margin: 0; }
 }
 
 @keyframes dialog-in {
-  from { opacity: 0; transform: translate(-50%, -48%) scale(0.98); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  from { opacity: 0; scale: 0.98; }
+  to { opacity: 1; scale: 1; }
 }
 
 @keyframes sheet-in {

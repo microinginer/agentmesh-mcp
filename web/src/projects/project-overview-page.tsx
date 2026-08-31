@@ -123,7 +123,7 @@ export function ProjectOverviewPage() {
             <p>Coordinate agents without stepping on each other.</p>
           </div>
           <Button asChild size="lg">
-            <Link to={`/app/projects/${projectId}/connections`} state={{ createConnection: true }}>
+            <Link to={`/app/projects/${projectId}/connections`}>
               <span aria-hidden="true">＋</span> New connection
             </Link>
           </Button>

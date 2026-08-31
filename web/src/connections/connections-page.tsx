@@ -1,6 +1,6 @@
 import { CheckCircle2Icon, ClipboardIcon, LaptopIcon, LinkIcon, PlusIcon, RotateCcwIcon, TriangleAlertIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { useLocation, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import {
   connectionListResponseSchema,
@@ -34,13 +34,12 @@ import { ProjectShell } from "@/projects/project-shell";
 interface ConnectionCreatorProps {
   api: ReturnType<typeof useSession>["api"];
   projectId: string;
-  initiallyOpen: boolean;
   onIssued: (connection: Connection) => void;
   onRevoke: (connection: Connection) => Promise<void>;
 }
 
-function ConnectionCreator({ api, projectId, initiallyOpen, onIssued, onRevoke }: ConnectionCreatorProps) {
-  const [open, setOpen] = useState(initiallyOpen);
+function ConnectionCreator({ api, projectId, onIssued, onRevoke }: ConnectionCreatorProps) {
+  const [open, setOpen] = useState(false);
   const [result, setResult] = useState<IssueConnectionResponse | null>(null);
   const secretRef = useRef<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -193,7 +192,6 @@ function displayStatus(status: Connection["status"]) {
 
 export function ConnectionsPage() {
   const projectId = useParams().projectId ?? "";
-  const { state } = useLocation() as { state: { createConnection?: boolean } | null };
   const { api } = useSession();
   const [project, setProject] = useState<Project | null>(null);
   const [connections, setConnections] = useState<Connection[] | null>(null);
@@ -257,7 +255,6 @@ export function ConnectionsPage() {
           <ConnectionCreator
             api={api}
             projectId={projectId}
-            initiallyOpen={state?.createConnection === true}
             onIssued={issued}
             onRevoke={revoke}
           />
