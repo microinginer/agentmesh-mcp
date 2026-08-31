@@ -212,7 +212,7 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
     );
 
     if (dependencies.web !== undefined && dependencies.web !== null) {
-      await protectedApp.register(fastifyCookie);
+      await protectedApp.register(fastifyCookie, { hook: false });
       const web = { ...dependencies.web, rateLimits: limits.web };
       registerWebAuthRoutes(protectedApp, web);
       registerControlRoutes(protectedApp, web);

@@ -9,7 +9,7 @@ import { createAuditService } from "../src/audit/service.js";
 import type { WebAuthConfig } from "../src/config.js";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { auditEvents, oauthIdentities, webSessions } from "../src/db/schema.js";
+import { auditEvents, oauthAttempts, oauthIdentities, users, webSessions } from "../src/db/schema.js";
 import { buildHttpApp } from "../src/http.js";
 import { createProjectService } from "../src/projects/service.js";
 import type { GitHubOAuthClient, GitHubProfile } from "../src/web-auth/github-client.js";
@@ -379,6 +379,30 @@ describe("web OAuth HTTP routes", () => {
     }
   });
 
+  it("disables automatic cookie parsing while retaining callback cookie decorators", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    const callbackCookies: unknown[] = [];
+    app.addHook("preHandler", async (request) => {
+      if (request.raw.url?.startsWith("/auth/github/callback")) callbackCookies.push(request.cookies);
+    });
+    try {
+      const attempt = await start(app);
+      const callback = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${attempt.state}`,
+        headers: { cookie: attempt.cookie },
+      });
+
+      expect(callback.statusCode).toBe(303);
+      expect(callbackCookies).toEqual([null]);
+      expect(cookies(callback)).toContainEqual(expect.stringContaining("agentmesh_oauth=;"));
+      expect(cookies(callback)).toContainEqual(expect.stringMatching(/^agentmesh_session=[^;]/));
+    } finally {
+      await app.close();
+    }
+  });
+
   it("fails closed for unsafe return targets, ambiguous callbacks, and provider failures", async () => {
     const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
     const { app } = buildWebApp({ github: github.client });
@@ -481,6 +505,7 @@ describe("web OAuth HTTP routes", () => {
       expect(csrfReuse.headers["cache-control"]).toBe("no-store");
       expect(cookies(csrfReuse)).not.toContainEqual(expect.stringContaining("agentmesh_session=;"));
 
+      await database.db.delete(auditEvents);
       github.setProfile({ id: "4343", login: "different", name: "Different", avatarUrl: null });
       const differentAttempt = await start(app);
       const differentCallback = await app.inject({
@@ -490,7 +515,208 @@ describe("web OAuth HTTP routes", () => {
       });
       expect(differentCallback.statusCode).toBe(303);
       expect(differentCallback.headers.location).toBe("/?auth_error=github");
+      expect(cookies(differentCallback).filter((value) => value.startsWith("agentmesh_session="))).toEqual([]);
       expect((await app.inject({ method: "GET", url: "/api/v1/session", headers: { cookie: replacementSession } })).statusCode).toBe(200);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents)).toEqual([
+        { eventType: "auth.login_failed" },
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("clears an idle-expired session, consumes the attempt, and requires a fresh login attempt", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app, clock } = buildWebApp({ github: github.client });
+    try {
+      const loginAttempt = await start(app);
+      const login = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${loginAttempt.state}`,
+        headers: { cookie: loginAttempt.cookie },
+      });
+      const staleSession = cookiePair(login, "agentmesh_session");
+      expect(staleSession).not.toBe("");
+      expect(cookies(login).find((value) => value.startsWith("agentmesh_session=")))
+        .toContain("Max-Age=2592000");
+      await database.db.delete(auditEvents);
+
+      clock.set("2026-08-08T00:00:00.000Z");
+      const staleAttempt = await start(app);
+      const stale = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${staleAttempt.state}`,
+        headers: { cookie: `${staleAttempt.cookie}; ${staleSession}` },
+      });
+
+      expect(stale.statusCode).toBe(303);
+      expect(stale.headers.location).toBe("/?auth_error=github");
+      expect(cookies(stale)).toContain(
+        "agentmesh_session=; Max-Age=0; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax",
+      );
+      expect(JSON.stringify({ headers: stale.headers, body: stale.body }))
+        .not.toContain(staleSession.split("=", 2)[1] ?? "missing-session");
+      const attemptsAfterStale = await database.db.select({ consumedAt: oauthAttempts.consumedAt }).from(oauthAttempts);
+      expect(attemptsAfterStale).toHaveLength(1);
+      expect(attemptsAfterStale.every((attempt) => attempt.consumedAt !== null)).toBe(true);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents)).toEqual([
+        { eventType: "auth.login_failed" },
+      ]);
+      expect(github.exchanges).toHaveLength(1);
+
+      const freshAttempt = await start(app);
+      const fresh = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${freshAttempt.state}`,
+        headers: { cookie: freshAttempt.cookie },
+      });
+      expect(fresh.headers.location).toBe("/app");
+      expect(cookiePair(fresh, "agentmesh_session")).not.toBe("");
+      const outcomes = await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents);
+      expect(outcomes).toHaveLength(2);
+      expect(outcomes).toEqual(expect.arrayContaining([
+        { eventType: "auth.login_failed" },
+        { eventType: "auth.login_succeeded" },
+      ]));
+      expect(github.exchanges).toHaveLength(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("recovers from an explicitly revoked secure session only on a fresh attempt", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app, sessionService } = buildWebApp({ github: github.client, secureCookies: true });
+    try {
+      const loginAttempt = await start(app);
+      const login = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${loginAttempt.state}`,
+        headers: { cookie: loginAttempt.cookie },
+      });
+      const staleSession = cookiePair(login, "__Host-agentmesh_session");
+      const authenticated = await sessionService.authenticate(staleSession.split("=", 2)[1] ?? "");
+      expect(authenticated).not.toBeNull();
+      if (authenticated === null) return;
+      await sessionService.revoke(authenticated.sessionId);
+
+      const staleAttempt = await start(app);
+      const stale = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${staleAttempt.state}`,
+        headers: { cookie: `${staleAttempt.cookie}; ${staleSession}` },
+      });
+      expect(stale.headers.location).toBe("/?auth_error=github");
+      expect(cookies(stale)).toContain(
+        "__Host-agentmesh_session=; Max-Age=0; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax",
+      );
+      expect(github.exchanges).toHaveLength(1);
+
+      const freshAttempt = await start(app);
+      const fresh = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${freshAttempt.state}`,
+        headers: { cookie: freshAttempt.cookie },
+      });
+      expect(fresh.headers.location).toBe("/app");
+      expect(cookiePair(fresh, "__Host-agentmesh_session")).not.toBe("");
+      expect(github.exchanges).toHaveLength(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("requires a consumed blocked-session callback to restart after unblock", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app, clock, sessionService } = buildWebApp({ github: github.client });
+    try {
+      const loginAttempt = await start(app);
+      const login = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${loginAttempt.state}`,
+        headers: { cookie: loginAttempt.cookie },
+      });
+      const staleSession = cookiePair(login, "agentmesh_session");
+      const authenticated = await sessionService.authenticate(staleSession.split("=", 2)[1] ?? "");
+      expect(authenticated).not.toBeNull();
+      if (authenticated === null) return;
+      await database.db.update(users).set({ blockedAt: clock.now() }).where(eq(users.id, authenticated.userId));
+
+      const blockedAttempt = await start(app);
+      const blocked = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${blockedAttempt.state}`,
+        headers: { cookie: `${blockedAttempt.cookie}; ${staleSession}` },
+      });
+      expect(blocked.headers.location).toBe("/?auth_error=github");
+      expect(cookies(blocked)).toContainEqual(expect.stringContaining("agentmesh_session=;"));
+      expect(github.exchanges).toHaveLength(1);
+
+      await database.db.update(users).set({ blockedAt: null }).where(eq(users.id, authenticated.userId));
+      const consumedRetry = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${blockedAttempt.state}`,
+        headers: { cookie: blockedAttempt.cookie },
+      });
+      expect(consumedRetry.headers.location).toBe("/?auth_error=github");
+      expect(github.exchanges).toHaveLength(1);
+
+      const freshAttempt = await start(app);
+      const fresh = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${freshAttempt.state}`,
+        headers: { cookie: freshAttempt.cookie },
+      });
+      expect(fresh.headers.location).toBe("/app");
+      expect(github.exchanges).toHaveLength(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("preserves a valid session cookie when callback authentication is transiently unavailable", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    let unavailable = false;
+    const { app } = buildWebApp({
+      github: github.client,
+      wrapSessionService: (service) => ({
+        ...service,
+        authenticate: async (token) => {
+          if (unavailable) throw new Error("transient session authentication failure");
+          return service.authenticate(token);
+        },
+      }),
+    });
+    try {
+      const loginAttempt = await start(app);
+      const login = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${loginAttempt.state}`,
+        headers: { cookie: loginAttempt.cookie },
+      });
+      const currentSession = cookiePair(login, "agentmesh_session");
+      await database.db.delete(auditEvents);
+      unavailable = true;
+      const retryAttempt = await start(app);
+      const unavailableCallback = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${retryAttempt.state}`,
+        headers: { cookie: `${retryAttempt.cookie}; ${currentSession}` },
+      });
+
+      expect(unavailableCallback.headers.location).toBe("/?auth_error=github");
+      expect(cookies(unavailableCallback).filter((value) => value.startsWith("agentmesh_session="))).toEqual([]);
+      expect(unavailableCallback.body).not.toContain("transient session authentication failure");
+      expect(github.exchanges).toHaveLength(1);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents)).toEqual([
+        { eventType: "auth.login_failed" },
+      ]);
+      unavailable = false;
+      expect((await app.inject({
+        method: "GET",
+        url: "/api/v1/session",
+        headers: { cookie: currentSession },
+      })).statusCode).toBe(200);
     } finally {
       await app.close();
     }
@@ -676,6 +902,7 @@ describe("web OAuth HTTP routes", () => {
         headers: { cookie: `${malformedSession.cookie}; agentmesh_session=not-canonical` },
       });
       expect(malformed.headers.location).toBe("/?auth_error=github");
+      expect(cookies(malformed).filter((value) => value.startsWith("agentmesh_session="))).toEqual([]);
       const malformedReplay = await app.inject({
         method: "GET",
         url: `/auth/github/callback?code=one-use&state=${malformedSession.state}`,
@@ -698,6 +925,7 @@ describe("web OAuth HTTP routes", () => {
         headers: { cookie: `${duplicateSession.cookie}; ${currentSession}; ${currentSession}` },
       });
       expect(duplicated.headers.location).toBe("/?auth_error=github");
+      expect(cookies(duplicated).filter((value) => value.startsWith("agentmesh_session="))).toEqual([]);
       expect(github.exchanges).toHaveLength(1);
 
       const authenticated = await sessionService.authenticate(currentSession.split("=", 2)[1] ?? "");

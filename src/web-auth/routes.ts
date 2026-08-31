@@ -298,7 +298,10 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
       } catch {
         return rejectedCallback(reply);
       }
-      if (currentSession === null) return rejectedCallback(reply);
+      if (currentSession === null) {
+        reply.clearCookie(names.session, commonCookieOptions);
+        return rejectedCallback(reply);
+      }
     }
     const completed = await oauth.complete({ ...input, attempt, currentSession });
     if (completed === null) return failure(reply);
