@@ -63,5 +63,6 @@ describe("production deployment topology", () => {
     const caddyfile = readFileSync("deploy/Caddyfile.site", "utf8");
     expect(caddyfile).toContain("@oauth_callback path /auth/github/callback");
     expect(caddyfile).toContain("skip_log @oauth_callback");
+    expect(caddyfile).toContain('Strict-Transport-Security "max-age=31536000; includeSubDomains"');
   });
 });
