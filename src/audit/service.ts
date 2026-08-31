@@ -44,6 +44,12 @@ function safeMetadata(metadata: unknown): AuditMetadata {
     || candidate.oauth_failure_stage === "session") {
     safe.oauth_failure_stage = candidate.oauth_failure_stage;
   }
+  if (candidate.oauth_failure_reason === "query_syntax"
+    || candidate.oauth_failure_reason === "query_keys"
+    || candidate.oauth_failure_reason === "code_format"
+    || candidate.oauth_failure_reason === "state_format") {
+    safe.oauth_failure_reason = candidate.oauth_failure_reason;
+  }
   if (typeof candidate.connection_label === "string") {
     safe.connection_label = candidate.connection_label;
   }

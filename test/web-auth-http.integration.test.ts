@@ -460,7 +460,50 @@ describe("web OAuth HTTP routes", () => {
         expect.objectContaining({
           userId: null,
           eventType: "auth.login_failed",
-          metadata: { provider: "github", oauth_failure_stage: "callback_query" },
+          metadata: {
+            provider: "github",
+            oauth_failure_stage: "callback_query",
+            oauth_failure_reason: "query_keys",
+          },
+        }),
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([
+    {
+      reason: "query_syntax",
+      callbackUrl: (state: string) => `/auth/github/callback?code=one-use&state=${state}&state=${state}`,
+    },
+    {
+      reason: "code_format",
+      callbackUrl: (state: string) => `/auth/github/callback?code=&state=${state}`,
+    },
+    {
+      reason: "state_format",
+      callbackUrl: () => "/auth/github/callback?code=one-use&state=invalid",
+    },
+  ])("records only the safe $reason callback-query reason", async ({ reason, callbackUrl }) => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const attempt = await start(app);
+      const callback = await app.inject({
+        method: "GET",
+        url: callbackUrl(attempt.state),
+        headers: { cookie: attempt.cookie },
+      });
+      expect(callback.headers.location).toBe("/?auth_error=github");
+      expect(github.exchanges).toHaveLength(0);
+      expect(await database.db.select().from(auditEvents)).toEqual([
+        expect.objectContaining({
+          metadata: {
+            provider: "github",
+            oauth_failure_stage: "callback_query",
+            oauth_failure_reason: reason,
+          },
         }),
       ]);
     } finally {

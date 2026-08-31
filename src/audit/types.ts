@@ -22,6 +22,7 @@ export interface AuditMetadata {
     | "profile"
     | "identity"
     | "session";
+  oauth_failure_reason?: "query_syntax" | "query_keys" | "code_format" | "state_format";
   connection_label?: string;
   project_name?: string;
   actor_kind?: "user" | "headless_cli";

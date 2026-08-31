@@ -220,11 +220,21 @@ function startReturnTo(request: FastifyRequest): string {
   return safeReturnTo(selected);
 }
 
-function callbackInput(request: FastifyRequest): { code: string; state: string } | null {
+type CallbackQueryResult =
+  | { ok: true; value: { code: string; state: string } }
+  | { ok: false; reason: "query_syntax" | "query_keys" | "code_format" | "state_format" };
+
+function callbackInput(request: FastifyRequest): CallbackQueryResult {
   const query = strictQuery(request.raw.url ?? "");
-  if (query === null || Object.keys(query).length !== 2 || typeof query.code !== "string" || typeof query.state !== "string"
-    || query.code.length === 0 || query.code.length > MAX_CODE_LENGTH || !isCanonicalWebCredential(query.state)) return null;
-  return { code: query.code, state: query.state };
+  if (query === null) return { ok: false, reason: "query_syntax" };
+  if (Object.keys(query).length !== 2 || typeof query.code !== "string" || typeof query.state !== "string") {
+    return { ok: false, reason: "query_keys" };
+  }
+  if (query.code.length === 0 || query.code.length > MAX_CODE_LENGTH) {
+    return { ok: false, reason: "code_format" };
+  }
+  if (!isCanonicalWebCredential(query.state)) return { ok: false, reason: "state_format" };
+  return { ok: true, value: { code: query.code, state: query.state } };
 }
 
 function failure(reply: FastifyReply): FastifyReply {
@@ -253,11 +263,16 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
   const rejectedCallback = async (
     reply: FastifyReply,
     stage: "callback_cookie" | "callback_query" | "current_session",
+    reason?: "query_syntax" | "query_keys" | "code_format" | "state_format",
   ): Promise<FastifyReply> => {
     await dependencies.auditService.recordBestEffort({
       userId: null,
       eventType: "auth.login_failed",
-      metadata: { provider: "github", oauth_failure_stage: stage },
+      metadata: {
+        provider: "github",
+        oauth_failure_stage: stage,
+        ...(reason === undefined ? {} : { oauth_failure_reason: reason }),
+      },
     });
     return failure(reply);
   };
@@ -289,7 +304,7 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
       return rejectedCallback(reply, "callback_cookie");
     }
     const input = callbackInput(request);
-    if (input === null) return rejectedCallback(reply, "callback_query");
+    if (!input.ok) return rejectedCallback(reply, "callback_query", input.reason);
 
     let currentSession = null;
     const sessionToken = cookieCandidates(rawCookies, names.session);
@@ -311,7 +326,7 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
         return rejectedCallback(reply, "current_session");
       }
     }
-    const completed = await oauth.complete({ ...input, attempt, currentSession });
+    const completed = await oauth.complete({ ...input.value, attempt, currentSession });
     if (completed === null) return failure(reply);
     return reply
       .setCookie(names.session, completed.session.sessionToken, cookieOptions(dependencies.config.secureCookies, SESSION_MAX_AGE_SECONDS))
