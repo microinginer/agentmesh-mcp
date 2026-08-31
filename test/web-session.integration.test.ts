@@ -526,6 +526,41 @@ describe("database-backed web sessions", () => {
     expect(active?.total).toBe(0);
   });
 
+  it("atomically rotates same-user reauthentication and CSRF secrets", async () => {
+    const clock = createTestClock("2026-08-01T00:00:00Z");
+    const user = await seedUser();
+    const otherUser = await seedUser({ githubUserId: "4343" });
+    const service = createWebSessionService({ db: database.db, keys, clock: clock.now });
+    const original = await service.issue(user.id);
+    expect(original).not.toBeNull();
+    if (original === null) return;
+
+    clock.set("2026-08-01T00:01:00Z");
+    const reauthenticated = await service.rotateForReauthentication(original.sessionId, user.id);
+    expect(reauthenticated?.authenticatedAt.toISOString()).toBe("2026-08-01T00:01:00.000Z");
+    expect(await service.authenticate(original.sessionToken)).toBeNull();
+    expect(await service.authenticate(reauthenticated!.sessionToken)).toMatchObject({ userId: user.id });
+
+    const beforeMismatch = await service.issue(user.id);
+    expect(beforeMismatch).not.toBeNull();
+    if (beforeMismatch === null) return;
+    await expect(service.rotateForReauthentication(beforeMismatch.sessionId, otherUser.id)).resolves.toBeNull();
+    await expect(service.authenticate(beforeMismatch.sessionToken)).resolves.toMatchObject({ sessionId: beforeMismatch.sessionId });
+
+    const authenticated = await service.authenticate(reauthenticated!.sessionToken);
+    expect(authenticated).not.toBeNull();
+    if (authenticated === null) return;
+    const rotatedCsrf = await service.rotateCsrf(authenticated.sessionId);
+    expect(rotatedCsrf).not.toBeNull();
+    if (rotatedCsrf === null) return;
+    expect(JSON.stringify(rotatedCsrf)).toBe("{}");
+    expect(service.verifyCsrf(reauthenticated!.csrfToken, authenticated.csrfDigest)).toBe(true);
+    expect(service.verifyCsrf(rotatedCsrf.csrfToken, authenticated.csrfDigest)).toBe(false);
+    const afterCsrfRotation = await service.authenticate(reauthenticated!.sessionToken);
+    expect(afterCsrfRotation).not.toBeNull();
+    expect(service.verifyCsrf(rotatedCsrf.csrfToken, afterCsrfRotation!.csrfDigest)).toBe(true);
+  });
+
   it("rejects invalid-clock revocation without changing durable session rows", async () => {
     const user = await seedUser();
     const validClock = createTestClock("2026-08-01T00:00:00Z");

@@ -18,6 +18,11 @@ export interface SessionCredential {
   csrfDigest: Buffer;
 }
 
+export interface CsrfCredential {
+  csrfToken: string;
+  csrfDigest: Buffer;
+}
+
 function deriveDigestKey(masterKey: Buffer, label: string): Buffer {
   if (masterKey.byteLength !== 32) {
     throw new Error("Invalid web auth key");
@@ -50,12 +55,22 @@ export function digestSessionToken(raw: string, key: Buffer): Buffer {
 
 export function createSessionCredential(keys: Pick<WebAuthKeys, "sessionDigestKey" | "csrfDigestKey">): SessionCredential {
   const sessionToken = randomBytes(32).toString("base64url");
-  const csrfToken = randomBytes(32).toString("base64url");
+  const csrf = createCsrfCredential(keys);
   const credential = {} as SessionCredential;
   Object.defineProperties(credential, {
     sessionToken: { value: sessionToken, enumerable: false },
-    csrfToken: { value: csrfToken, enumerable: false },
+    csrfToken: { value: csrf.csrfToken, enumerable: false },
     sessionDigest: { value: digestSessionToken(sessionToken, keys.sessionDigestKey), enumerable: false },
+    csrfDigest: { value: csrf.csrfDigest, enumerable: false },
+  });
+  return credential;
+}
+
+export function createCsrfCredential(keys: Pick<WebAuthKeys, "csrfDigestKey">): CsrfCredential {
+  const csrfToken = randomBytes(32).toString("base64url");
+  const credential = {} as CsrfCredential;
+  Object.defineProperties(credential, {
+    csrfToken: { value: csrfToken, enumerable: false },
     csrfDigest: { value: digest(csrfToken, keys.csrfDigestKey), enumerable: false },
   });
   return credential;

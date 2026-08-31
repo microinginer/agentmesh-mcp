@@ -11,11 +11,14 @@ import type { AuthInfo } from "@modelcontextprotocol/server";
 import type { AgentMeshDatabase } from "./db/client.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import type { AdminRouteDependencies } from "./admin/routes.js";
+import fastifyCookie from "@fastify/cookie";
 import { AgentMeshError } from "./errors.js";
 import { createSafeLogger } from "./logging.js";
 import type { SafeLogger } from "./logging.js";
 import { buildMcpHandler } from "./mcp/server.js";
 import type { ProjectService } from "./projects/service.js";
+import { registerWebAuthRoutes } from "./web-auth/routes.js";
+import type { WebAuthRouteDependencies } from "./web-auth/routes.js";
 
 interface HttpAppDependencies {
   db: AgentMeshDatabase;
@@ -24,6 +27,7 @@ interface HttpAppDependencies {
   host: string;
   allowedHosts: string[];
   admin: AdminRouteDependencies | null;
+  web?: WebAuthRouteDependencies | null;
   logger?: SafeLogger;
 }
 
@@ -54,6 +58,10 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
   app.get("/health", async () => ({ status: "ok" }));
 
   registerAdminRoutes(app, dependencies.admin);
+  if (dependencies.web !== undefined && dependencies.web !== null) {
+    app.register(fastifyCookie);
+    registerWebAuthRoutes(app, dependencies.web);
+  }
 
   app.post("/mcp", async (request, reply) => {
     const bearer = bearerFromHeader(request.headers.authorization);

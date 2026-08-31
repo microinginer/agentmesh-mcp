@@ -3,6 +3,7 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { oauthIdentities, users, webSessions } from "../db/schema.js";
 import {
+  createCsrfCredential,
   createSessionCredential,
   digestSessionToken,
   verifyCsrfToken,
@@ -41,9 +42,16 @@ export interface IssuedWebSession {
 export interface WebSessionService {
   issue(userId: string, authenticatedAt?: Date): Promise<IssuedWebSession | null>;
   authenticate(sessionToken: string): Promise<AuthenticatedWebSession | null>;
+  isAvailable(): boolean;
+  rotateForReauthentication(currentSessionId: string, userId: string, authenticatedAt?: Date): Promise<IssuedWebSession | null>;
+  rotateCsrf(sessionId: string): Promise<RotatedCsrf | null>;
   verifyCsrf(csrfToken: string, csrfDigest: Buffer): boolean;
   revoke(sessionId: string): Promise<void>;
   revokeAllForUser(userId: string): Promise<void>;
+}
+
+export interface RotatedCsrf {
+  csrfToken: string;
 }
 
 export class WebSessionServiceUnavailableError extends Error {
@@ -135,6 +143,28 @@ function issuedSession(row: {
   return issued;
 }
 
+function rotatedCsrf(credential: { csrfToken: string }): RotatedCsrf {
+  const rotated = {} as RotatedCsrf;
+  Object.defineProperty(rotated, "csrfToken", { value: credential.csrfToken, enumerable: false });
+  return rotated;
+}
+
+function activeAt(row: {
+  authenticatedAt: Date;
+  lastSeenAt: Date;
+  idleExpiresAt: Date;
+  absoluteExpiresAt: Date;
+}, now: Date): boolean {
+  return isValidDate(row.authenticatedAt)
+    && isValidDate(row.lastSeenAt)
+    && isValidDate(row.idleExpiresAt)
+    && isValidDate(row.absoluteExpiresAt)
+    && now.getTime() >= row.authenticatedAt.getTime()
+    && now.getTime() >= row.lastSeenAt.getTime()
+    && now.getTime() < row.idleExpiresAt.getTime()
+    && now.getTime() < row.absoluteExpiresAt.getTime();
+}
+
 export function createWebSessionService(dependencies: WebSessionServiceDependencies): WebSessionService {
   const clock = dependencies.clock ?? (() => new Date());
 
@@ -183,6 +213,14 @@ export function createWebSessionService(dependencies: WebSessionServiceDependenc
     });
   }
 
+  function isAvailable(): boolean {
+    try {
+      return isValidDate(clock());
+    } catch {
+      return false;
+    }
+  }
+
   async function authenticate(sessionToken: string): Promise<AuthenticatedWebSession | null> {
     if (!isCanonicalWebCredential(sessionToken)) {
       return null;
@@ -220,10 +258,7 @@ export function createWebSessionService(dependencies: WebSessionServiceDependenc
       if (row === undefined || row.revokedAt !== null || row.blockedAt !== null) {
         return null;
       }
-      if (!isValidDate(row.authenticatedAt) || !isValidDate(row.lastSeenAt)
-        || !isValidDate(row.idleExpiresAt) || !isValidDate(row.absoluteExpiresAt)
-        || now.getTime() < row.authenticatedAt.getTime() || now.getTime() < row.lastSeenAt.getTime()
-        || now.getTime() >= row.idleExpiresAt.getTime() || now.getTime() >= row.absoluteExpiresAt.getTime()) {
+      if (!activeAt(row, now)) {
         return null;
       }
 
@@ -247,6 +282,86 @@ export function createWebSessionService(dependencies: WebSessionServiceDependenc
       }
 
       return authenticatedSnapshot({ ...row, idleExpiresAt });
+    });
+  }
+
+  async function rotateForReauthentication(
+    currentSessionId: string,
+    userId: string,
+    authenticatedAt = clock(),
+  ): Promise<IssuedWebSession | null> {
+    const now = cloneDate(authenticatedAt);
+    if (!isValidDate(now)) return null;
+    const credential = createSessionCredential(dependencies.keys);
+    const absoluteExpiresAt = addMilliseconds(now, ABSOLUTE_LIFETIME_MS);
+    const requestedIdleExpiry = addMilliseconds(now, IDLE_LIFETIME_MS);
+    if (!isValidDate(absoluteExpiresAt) || !isValidDate(requestedIdleExpiry)) return null;
+    const idleExpiresAt = minimumDate(requestedIdleExpiry, absoluteExpiresAt);
+
+    return dependencies.db.transaction(async (transaction) => {
+      const [current] = await transaction.select({
+        id: webSessions.id,
+        userId: webSessions.userId,
+        authenticatedAt: webSessions.authenticatedAt,
+        lastSeenAt: webSessions.lastSeenAt,
+        idleExpiresAt: webSessions.idleExpiresAt,
+        absoluteExpiresAt: webSessions.absoluteExpiresAt,
+        revokedAt: webSessions.revokedAt,
+        blockedAt: users.blockedAt,
+      }).from(webSessions).innerJoin(users, eq(users.id, webSessions.userId))
+        .where(eq(webSessions.id, currentSessionId)).limit(1).for("update");
+      if (current === undefined || current.userId !== userId || current.revokedAt !== null || current.blockedAt !== null
+        || !activeAt(current, now)) return null;
+
+      const [revoked] = await transaction.update(webSessions).set({ revokedAt: now }).where(and(
+        eq(webSessions.id, currentSessionId),
+        eq(webSessions.userId, userId),
+        isNull(webSessions.revokedAt),
+      )).returning({ id: webSessions.id });
+      if (revoked === undefined) return null;
+
+      const [created] = await transaction.insert(webSessions).values({
+        userId,
+        tokenDigest: credential.sessionDigest,
+        csrfDigest: credential.csrfDigest,
+        authenticatedAt: now,
+        lastSeenAt: now,
+        idleExpiresAt,
+        absoluteExpiresAt,
+      }).returning({ id: webSessions.id });
+      if (created === undefined) throw new Error("Web session rotation did not return a session ID");
+      return issuedSession({
+        sessionId: created.id,
+        authenticatedAt: now,
+        idleExpiresAt,
+        absoluteExpiresAt,
+      }, credential);
+    });
+  }
+
+  async function rotateCsrf(sessionId: string): Promise<RotatedCsrf | null> {
+    const now = cloneDate(clock());
+    if (!isValidDate(now)) return null;
+    const credential = createCsrfCredential(dependencies.keys);
+    return dependencies.db.transaction(async (transaction) => {
+      const [current] = await transaction.select({
+        id: webSessions.id,
+        authenticatedAt: webSessions.authenticatedAt,
+        lastSeenAt: webSessions.lastSeenAt,
+        idleExpiresAt: webSessions.idleExpiresAt,
+        absoluteExpiresAt: webSessions.absoluteExpiresAt,
+        revokedAt: webSessions.revokedAt,
+        blockedAt: users.blockedAt,
+      }).from(webSessions).innerJoin(users, eq(users.id, webSessions.userId))
+        .where(eq(webSessions.id, sessionId)).limit(1).for("update");
+      if (current === undefined || current.revokedAt !== null || current.blockedAt !== null || !activeAt(current, now)) {
+        return null;
+      }
+      const [updated] = await transaction.update(webSessions).set({ csrfDigest: credential.csrfDigest }).where(and(
+        eq(webSessions.id, sessionId),
+        isNull(webSessions.revokedAt),
+      )).returning({ id: webSessions.id });
+      return updated === undefined ? null : rotatedCsrf(credential);
     });
   }
 
@@ -281,5 +396,5 @@ export function createWebSessionService(dependencies: WebSessionServiceDependenc
       && verifyCsrfToken(csrfToken, csrfDigest, dependencies.keys.csrfDigestKey);
   }
 
-  return { issue, authenticate, verifyCsrf, revoke, revokeAllForUser };
+  return { issue, authenticate, isAvailable, rotateForReauthentication, rotateCsrf, verifyCsrf, revoke, revokeAllForUser };
 }

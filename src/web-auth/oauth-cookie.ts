@@ -9,6 +9,7 @@ export interface OAuthAttempt {
   state: string;
   verifier: string;
   expiresAt: number;
+  returnTo?: string;
 }
 
 function validKey(key: Buffer): boolean {
@@ -23,6 +24,13 @@ function canonicalBase64url(value: string): Buffer | null {
   return decoded.toString("base64url") === value ? decoded : null;
 }
 
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+}
+
 function validAttempt(value: unknown): value is OAuthAttempt {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -35,7 +43,14 @@ function validAttempt(value: unknown): value is OAuthAttempt {
     typeof attempt.verifier === "string" &&
     attempt.verifier.length > 0 &&
     attempt.verifier.length <= 512 &&
-    Number.isSafeInteger(attempt.expiresAt)
+    Number.isSafeInteger(attempt.expiresAt) &&
+    (attempt.returnTo === undefined || (
+      typeof attempt.returnTo === "string"
+      && attempt.returnTo.length > 0
+      && attempt.returnTo.length <= 2_048
+      && !hasControlCharacter(attempt.returnTo)
+      && !attempt.returnTo.includes("\\")
+    ))
   );
 }
 
