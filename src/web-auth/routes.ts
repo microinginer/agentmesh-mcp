@@ -14,6 +14,8 @@ import { deriveWebAuthKeys } from "./session-token.js";
 const OAUTH_ATTEMPT_MAX_AGE_SECONDS = 5 * 60;
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const MAX_COOKIE_HEADER_LENGTH = 8_192;
+const MAX_COOKIE_FIELDS = 4;
+const MAX_COOKIE_CANDIDATES = 4;
 const MAX_QUERY_LENGTH = 4_096;
 const MAX_QUERY_PARTS = 8;
 const MAX_QUERY_VALUE_LENGTH = 2_048;
@@ -55,44 +57,78 @@ function cookieOptions(secure: boolean, maxAge?: number) {
   };
 }
 
-type HeaderSelection = { kind: "absent" } | { kind: "valid"; value: string } | { kind: "invalid" };
+interface RawCookieFields {
+  fields: string[];
+  repeated: boolean;
+  invalid: boolean;
+}
 
-function singleRawHeader(request: FastifyRequest, name: string): HeaderSelection {
+interface CookieCandidates {
+  values: string[];
+  invalid: boolean;
+}
+
+function rawCookieFields(request: FastifyRequest): RawCookieFields {
   const headers = request.raw.rawHeaders;
   if (Array.isArray(headers) && headers.length > 0) {
-    const values: string[] = [];
+    const fields: string[] = [];
+    let count = 0;
+    let totalLength = 0;
+    let invalid = false;
     for (let index = 0; index < headers.length; index += 2) {
-      if (headers[index]?.toLowerCase() === name) {
+      if (headers[index]?.toLowerCase() === "cookie") {
+        count += 1;
         const value = headers[index + 1];
-        if (value === undefined) return { kind: "invalid" };
+        if (value === undefined || count > MAX_COOKIE_FIELDS) {
+          invalid = true;
+          continue;
+        }
+        totalLength += value.length;
+        if (value.length === 0 || value.length > MAX_COOKIE_HEADER_LENGTH || totalLength > MAX_COOKIE_HEADER_LENGTH) {
+          invalid = true;
+          continue;
+        }
+        fields.push(value);
+      }
+    }
+    return { fields, repeated: count > 1, invalid };
+  }
+  const value = request.headers.cookie;
+  if (value === undefined) return { fields: [], repeated: false, invalid: false };
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_COOKIE_HEADER_LENGTH) {
+    return { fields: [], repeated: false, invalid: true };
+  }
+  return { fields: [value], repeated: false, invalid: false };
+}
+
+function cookieCandidates(raw: RawCookieFields, name: string): CookieCandidates {
+  const values: string[] = [];
+  let invalid = raw.invalid;
+  for (const field of raw.fields) {
+    for (const item of field.split(";")) {
+      const trimmed = item.trim();
+      const separator = trimmed.indexOf("=");
+      if (separator <= 0 || trimmed.length === 0) {
+        invalid = true;
+        continue;
+      }
+      const candidateName = trimmed.slice(0, separator);
+      const value = trimmed.slice(separator + 1);
+      if (candidateName.length === 0 || value.length === 0 || hasControlCharacter(candidateName)
+        || hasControlCharacter(value)) {
+        invalid = true;
+        continue;
+      }
+      if (candidateName === name) {
+        if (values.length === MAX_COOKIE_CANDIDATES) {
+          invalid = true;
+          continue;
+        }
         values.push(value);
       }
     }
-    if (values.length === 0) return { kind: "absent" };
-    return values.length === 1 ? { kind: "valid", value: values[0] ?? "" } : { kind: "invalid" };
   }
-  const value = request.headers[name];
-  if (value === undefined) return { kind: "absent" };
-  return typeof value === "string" ? { kind: "valid", value } : { kind: "invalid" };
-}
-
-function selectedCookie(header: HeaderSelection, name: string): HeaderSelection {
-  if (header.kind !== "valid") return header;
-  if (header.value.length === 0 || header.value.length > MAX_COOKIE_HEADER_LENGTH) return { kind: "invalid" };
-  let selected: string | null = null;
-  for (const item of header.value.split(";")) {
-    const trimmed = item.trim();
-    const separator = trimmed.indexOf("=");
-    if (separator <= 0 || trimmed.length === 0) return { kind: "invalid" };
-    const candidateName = trimmed.slice(0, separator);
-    const value = trimmed.slice(separator + 1);
-    if (candidateName.length === 0 || value.length === 0) return { kind: "invalid" };
-    if (candidateName === name) {
-      if (selected !== null) return { kind: "invalid" };
-      selected = value;
-    }
-  }
-  return selected === null ? { kind: "absent" } : { kind: "valid", value: selected };
+  return { values, invalid };
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -226,21 +262,25 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
   app.get("/auth/github/callback", async (request, reply) => {
     reply.header("Cache-Control", noStore);
     reply.clearCookie(names.oauth, commonCookieOptions);
-    const cookieHeader = singleRawHeader(request, "cookie");
-    const attemptCookie = selectedCookie(cookieHeader, names.oauth);
-    if (attemptCookie.kind !== "valid") return failure(reply);
-    const attempt = await oauth.consume(attemptCookie.value);
-    if (attempt === null) return failure(reply);
+    const rawCookies = rawCookieFields(request);
+    const attemptCookies = cookieCandidates(rawCookies, names.oauth);
+    const attempts = await Promise.all(attemptCookies.values.map((value) => oauth.consume(value)));
+    const attempt = attempts[0];
+    if (rawCookies.repeated || attemptCookies.invalid || attemptCookies.values.length !== 1
+      || attempt === undefined || attempt === null) {
+      return failure(reply);
+    }
     const input = callbackInput(request);
     if (input === null) return failure(reply);
 
     let currentSession = null;
-    const sessionToken = selectedCookie(cookieHeader, names.session);
-    if (sessionToken.kind === "invalid") return failure(reply);
-    if (sessionToken.kind === "valid") {
-      if (!isCanonicalWebCredential(sessionToken.value)) return failure(reply);
+    const sessionToken = cookieCandidates(rawCookies, names.session);
+    if (sessionToken.invalid || sessionToken.values.length > 1) return failure(reply);
+    if (sessionToken.values.length === 1) {
+      const value = sessionToken.values[0];
+      if (value === undefined || !isCanonicalWebCredential(value)) return failure(reply);
       try {
-        currentSession = await dependencies.sessionService.authenticate(sessionToken.value);
+        currentSession = await dependencies.sessionService.authenticate(value);
       } catch {
         return failure(reply);
       }

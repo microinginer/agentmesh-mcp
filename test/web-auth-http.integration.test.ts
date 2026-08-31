@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { connect } from "node:net";
+import type { FastifyInstance } from "fastify";
 
 import { count, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -45,6 +47,48 @@ async function start(app: ReturnType<typeof buildHttpApp>, suffix = ""): Promise
   const state = new URL(response.headers.location ?? "", "https://example.test").searchParams.get("state");
   expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/);
   return { state: state!, cookie: firstCookie(response) };
+}
+
+async function listenLoopback(app: FastifyInstance): Promise<number> {
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  if (address === null || typeof address === "string") throw new Error("missing loopback address");
+  return address.port;
+}
+
+async function rawCookieCallback(port: number, url: string, cookieFields: string[]): Promise<{
+  statusCode: number;
+  headers: Record<string, string[]>;
+}> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: "127.0.0.1", port }, () => {
+      socket.write([
+        `GET ${url} HTTP/1.1`,
+        "Host: 127.0.0.1",
+        ...cookieFields.map((value) => `Cookie: ${value}`),
+        "Connection: close",
+        "",
+        "",
+      ].join("\r\n"));
+    });
+    const chunks: Buffer[] = [];
+    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+    socket.once("error", reject);
+    socket.once("end", () => {
+      const head = Buffer.concat(chunks).toString("utf8").split("\r\n\r\n", 1)[0] ?? "";
+      const lines = head.split("\r\n");
+      const statusCode = /^HTTP\/1\.1 (\d{3})\b/.exec(lines[0] ?? "")?.[1];
+      if (statusCode === undefined) return reject(new Error(`missing HTTP status: ${head}`));
+      const headers: Record<string, string[]> = {};
+      for (const line of lines.slice(1)) {
+        const separator = line.indexOf(":");
+        if (separator <= 0) continue;
+        const name = line.slice(0, separator).toLowerCase();
+        (headers[name] ??= []).push(line.slice(separator + 1).trim());
+      }
+      resolve({ statusCode: Number(statusCode), headers });
+    });
+  });
 }
 
 beforeAll(async () => {
@@ -582,17 +626,6 @@ describe("web OAuth HTTP routes", () => {
       expect(duplicated.headers.location).toBe("/?auth_error=github");
       expect(github.exchanges).toHaveLength(1);
 
-      const repeatedRawHeader = await start(app);
-      const repeated = await app.inject({
-        method: "GET",
-        url: `/auth/github/callback?code=one-use&state=${repeatedRawHeader.state}`,
-        headers: {
-          cookie: [repeatedRawHeader.cookie, "agentmesh_session=not-canonical"],
-        } as never,
-      });
-      expect(repeated.headers.location).toBe("/?auth_error=github");
-      expect(github.exchanges).toHaveLength(1);
-
       const authenticated = await sessionService.authenticate(currentSession.split("=", 2)[1] ?? "");
       expect(authenticated).not.toBeNull();
       if (authenticated === null) return;
@@ -611,6 +644,69 @@ describe("web OAuth HTTP routes", () => {
       });
       expect(staleReplay.headers.location).toBe("/?auth_error=github");
       expect(github.exchanges).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("consumes every valid OAuth candidate from repeated raw Cookie fields before safe rejection", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    const rawCookieFields: string[][] = [];
+    app.addHook("onRequest", async (request) => {
+      if (request.raw.url?.startsWith("/auth/github/callback")) {
+        const values: string[] = [];
+        for (let index = 0; index < request.raw.rawHeaders.length; index += 2) {
+          if (request.raw.rawHeaders[index]?.toLowerCase() === "cookie") {
+            values.push(request.raw.rawHeaders[index + 1] ?? "");
+          }
+        }
+        rawCookieFields.push(values);
+      }
+    });
+    try {
+      const attemptWithMalformedSession = await start(app);
+      const port = await listenLoopback(app);
+      const repeatedMalformed = await rawCookieCallback(
+        port,
+        `/auth/github/callback?code=one-use&state=${attemptWithMalformedSession.state}`,
+        [attemptWithMalformedSession.cookie, "agentmesh_session=not-canonical"],
+      );
+      expect(rawCookieFields[0]).toEqual([attemptWithMalformedSession.cookie, "agentmesh_session=not-canonical"]);
+      expect(repeatedMalformed).toMatchObject({
+        statusCode: 303,
+        headers: { location: ["/?auth_error=github"], "cache-control": ["no-store"] },
+      });
+      expect(repeatedMalformed.headers["set-cookie"]?.some((value) => value.startsWith("agentmesh_oauth=;"))).toBe(true);
+      expect(github.exchanges).toHaveLength(0);
+      const malformedReplay = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${attemptWithMalformedSession.state}`,
+        headers: { cookie: attemptWithMalformedSession.cookie },
+      });
+      expect(malformedReplay.headers.location).toBe("/?auth_error=github");
+
+      const firstAttempt = await start(app);
+      const secondAttempt = await start(app);
+      const repeatedOAuth = await rawCookieCallback(
+        port,
+        `/auth/github/callback?code=one-use&state=${firstAttempt.state}`,
+        [firstAttempt.cookie, secondAttempt.cookie],
+      );
+      expect(rawCookieFields[2]).toEqual([firstAttempt.cookie, secondAttempt.cookie]);
+      expect(repeatedOAuth.headers.location).toEqual(["/?auth_error=github"]);
+      expect(github.exchanges).toHaveLength(0);
+      for (const attempt of [firstAttempt, secondAttempt]) {
+        const replay = await app.inject({
+          method: "GET",
+          url: `/auth/github/callback?code=one-use&state=${attempt.state}`,
+          headers: { cookie: attempt.cookie },
+        });
+        expect(replay.headers.location).toBe("/?auth_error=github");
+      }
+      expect(github.exchanges).toHaveLength(0);
+      const [sessions] = await database.db.select({ total: count() }).from(webSessions);
+      expect(sessions?.total).toBe(0);
     } finally {
       await app.close();
     }
