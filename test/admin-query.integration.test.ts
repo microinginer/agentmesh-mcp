@@ -282,15 +282,18 @@ describe("project-scoped admin read models", () => {
       fixture.longMessage,
       fixture.imageMessage,
     ]);
-    expect(listedMessages.data.items[1]?.preview).toBe(`${"😀".repeat(160)}…`);
-    expect(JSON.stringify(listedMessages.data.items)).not.toContain("idempotencyKey");
-    expect(JSON.stringify(listedMessages.data.items)).not.toContain("beta private text");
+    const serializedMessages = JSON.stringify(listedMessages.data.items);
+    expect(serializedMessages).not.toContain("idempotencyKey");
+    expect(serializedMessages).not.toContain("beta private text");
+    expect(serializedMessages).not.toContain("😀");
+    expect(serializedMessages).not.toContain('"preview"');
+    expect(serializedMessages).not.toContain('"text"');
     expect(listedMessages.data.items.map((message) => message.id)).not.toContain(fixture.betaMessage);
 
-    expect(detail).toEqual({
-      found: true,
-      data: expect.objectContaining({ id: fixture.imageMessage, text: "<img src=x onerror=alert(1)>" }),
-    });
+    expect(detail).toEqual({ found: true, data: expect.objectContaining({ id: fixture.imageMessage }) });
+    expect(JSON.stringify(detail)).not.toContain("<img src=x onerror=alert(1)>");
+    expect(JSON.stringify(detail)).not.toContain('"preview"');
+    expect(JSON.stringify(detail)).not.toContain('"text"');
     expect(await service.getMessage(fixture.projectA, randomUUID())).toEqual({ found: false });
     expect(await service.getMessage(fixture.projectA, fixture.longMessage)).toMatchObject({ found: true });
     expect(await service.getMessage(fixture.projectA, fixture.betaMessage)).toEqual({ found: false });
@@ -311,6 +314,26 @@ describe("project-scoped admin read models", () => {
       }),
     ]);
     expect(JSON.stringify(listedEvents.data.items)).not.toContain("beta private text");
+  });
+
+  it("never selects message text for the legacy admin compatibility adapter", async () => {
+    const fixture = await seedFixture();
+    const statements: string[] = [];
+    const metadataService = createAdminQueryService({
+      clock: () => now,
+      db: drizzle({
+        client: database.pool,
+        logger: { logQuery(query) { statements.push(query); } },
+        schema,
+      }),
+    });
+
+    await metadataService.listMessages(fixture.projectA, { limit: 50 });
+    await metadataService.getMessage(fixture.projectA, fixture.imageMessage);
+
+    const messageStatements = statements.filter((statement) => statement.includes('from "messages"'));
+    expect(messageStatements).toHaveLength(2);
+    expect(messageStatements.every((statement) => !/"messages"\."text"/.test(statement))).toBe(true);
   });
 
   it("applies message and activity filters on the server and summarizes one project", async () => {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createDatabase } from "../src/db/client.js";
@@ -214,5 +215,39 @@ describe("hosted control-plane schema", () => {
     expect(failures).toEqual([
       { event: "audit.persist_failed", event_type: "auth.logout" },
     ]);
+  });
+
+  it("upgrades a legacy database idempotently with the additive owner-assignment audit event", async () => {
+    const fixture = await createLegacyMigrationFixture(databaseUrl);
+    try {
+      const projectId = randomUUID();
+      await fixture.database.pool.query(
+        "INSERT INTO projects (id, name) VALUES ($1, $2)",
+        [projectId, "legacy-assignment-target"],
+      );
+
+      await fixture.migrateHosted();
+      await fixture.migrateHosted();
+
+      const service = createAuditService({
+        db: fixture.database.db,
+        clock: () => new Date("2026-08-31T12:00:00.000Z"),
+      });
+      await service.record({
+        projectId,
+        eventType: "operator.project_owner_assigned",
+        metadata: { project_name: "legacy-assignment-target" },
+      });
+      const [event] = await fixture.database.db.select().from(auditEvents).where(
+        eq(auditEvents.eventType, "operator.project_owner_assigned"),
+      );
+      expect(event).toMatchObject({
+        projectId,
+        eventType: "operator.project_owner_assigned",
+        metadata: { project_name: "legacy-assignment-target" },
+      });
+    } finally {
+      await fixture.destroy();
+    }
   });
 });

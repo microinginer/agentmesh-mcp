@@ -438,14 +438,14 @@ describe("dashboard browser controller", () => {
   it("prepends multi-row activity and message batches newest first", async () => {
     const base = dashboardReply("project-a");
     const initialEvent = { actor: null, created_at: "2026-08-31T00:00:00.000Z", event_type: "event-10", id: "event-10", outcome: "success", sequence: 10 };
-    const initialMessage = { acknowledged_at: null, created_at: "2026-08-31T00:00:00.000Z", id: "message-10", preview: "message-10", recipient: { name: "recipient" }, sender: { name: "sender" }, sequence: 10 };
+    const initialMessage = { acknowledged_at: null, created_at: "2026-08-31T00:00:00.000Z", id: "message-10", recipient: { name: "recipient" }, sender: { name: "sender" }, sequence: 10 };
     const harness = createControllerHarness(async (url) => {
       const request = new URL(url, "http://localhost");
       if (request.pathname === "/api/admin/projects") return success(base.projects);
       if (request.pathname.endsWith("/summary")) return success(base.summary);
       if (request.pathname.endsWith("/agents")) return success(base.agents);
       if (request.pathname.endsWith("/messages")) return request.searchParams.has("after")
-        ? success({ has_more: false, items: [{ ...initialMessage, id: "message-11", preview: "message-11", sequence: 11 }, { ...initialMessage, id: "message-12", preview: "message-12", sequence: 12 }] })
+        ? success({ has_more: false, items: [{ ...initialMessage, id: "message-11", sequence: 11 }, { ...initialMessage, id: "message-12", sequence: 12 }] })
         : success({ has_more: false, items: [initialMessage] });
       return request.searchParams.has("after")
         ? success({ has_more: false, items: [{ ...initialEvent, event_type: "event-11", id: "event-11", sequence: 11 }, { ...initialEvent, event_type: "event-12", id: "event-12", sequence: 12 }] })
@@ -490,7 +490,7 @@ describe("dashboard browser controller", () => {
 
   it("polls activity while Messages is visible and applies a matching acknowledgement", async () => {
     const base = dashboardReply("project-a");
-    const message = { acknowledged_at: null, created_at: "2026-08-31T00:00:00.000Z", id: "message-a", preview: "hello", recipient: { name: "recipient" }, sender: { name: "sender" }, sequence: 12 };
+    const message = { acknowledged_at: null, created_at: "2026-08-31T00:00:00.000Z", id: "message-a", recipient: { name: "recipient" }, sender: { name: "sender" }, sequence: 12 };
     const harness = createControllerHarness(async (url) => {
       const request = new URL(url, "http://localhost");
       if (request.pathname === "/api/admin/projects") return success(base.projects);
@@ -779,13 +779,13 @@ describe("dashboard browser controller", () => {
 
   it("keeps controller interactions dependency-free for scroll, login, drawer, and logout", async () => {
     const base = dashboardReply("project-a");
-    const message = { acknowledged_at: null, created_at: "2026-08-31T00:00:00.000Z", id: "message-a", preview: "hello", recipient: { name: "recipient" }, sender: { name: "sender" }, sequence: 12 };
+    const message = { acknowledged_at: null, created_at: "2026-08-31T00:00:00.000Z", id: "message-a", recipient: { name: "recipient" }, sender: { name: "sender" }, sequence: 12 };
     const harness = createControllerHarness(async (url) => {
       const request = new URL(url, "http://localhost");
       if (request.pathname === "/api/admin/projects") return success(base.projects);
       if (request.pathname.endsWith("/summary")) return success(base.summary);
       if (request.pathname.endsWith("/agents")) return success(base.agents);
-      if (request.pathname.endsWith("/messages/message-a")) return success({ ...message, text: "full private message" });
+      if (request.pathname.endsWith("/messages/message-a")) return success(message);
       if (request.pathname.endsWith("/messages")) return success({ has_more: false, items: [message] });
       if (request.searchParams.has("after")) return success({ has_more: false, items: [{ actor: null, created_at: "2026-08-31T00:00:01.000Z", event_type: "agent.synced", id: "event-13", outcome: "success", sequence: 13 }] });
       return success({ has_more: false, items: [{ actor: null, created_at: "2026-08-31T00:00:00.000Z", event_type: "agent.synced", id: "event-12", outcome: "success", sequence: 12 }] });
@@ -794,10 +794,11 @@ describe("dashboard browser controller", () => {
     await harness.settle();
     harness.tab("messages").dispatch("click");
     await harness.settle();
-    const preview = harness.node("data-view").children[0]?.children[1]?.children[0]?.children[2]?.children[0];
-    preview?.dispatch("click");
+    const metadataButton = harness.node("data-view").children[0]?.children[1]?.children[0]?.children[2]?.children[0];
+    metadataButton?.dispatch("click");
     await harness.settle();
-    expect(harness.node("drawer-text").textContent).toBe("full private message");
+    expect(harness.node("drawer-text").textContent).toContain('"id": "message-a"');
+    expect(harness.node("drawer-text").textContent).not.toContain("full private message");
     harness.node("logout-button").dispatch("click");
     await harness.settle();
     expect(harness.calls.at(-1)?.options?.method).toBe("DELETE");

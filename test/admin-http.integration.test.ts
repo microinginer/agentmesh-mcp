@@ -275,13 +275,19 @@ describe("authenticated read-only admin HTTP API", () => {
       const messagesResponse = await request(`/api/admin/projects/${fixture.projectA}/messages?acknowledged=false`);
       expect(messagesResponse.statusCode).toBe(200);
       expect(messagesResponse.json()).toEqual(expect.objectContaining({ items: [
-        expect.objectContaining({ id: fixture.messageA, preview: "alpha message" }),
+        expect.objectContaining({ id: fixture.messageA }),
       ] }));
+      expect(JSON.stringify(messagesResponse.json())).not.toContain("alpha message");
+      expect(JSON.stringify(messagesResponse.json())).not.toContain('"preview"');
+      expect(JSON.stringify(messagesResponse.json())).not.toContain('"text"');
       expectNoStore(messagesResponse);
 
       const message = await request(`/api/admin/projects/${fixture.projectA}/messages/${fixture.messageA}`);
       expect(message.statusCode).toBe(200);
-      expect(message.json()).toEqual(expect.objectContaining({ id: fixture.messageA, text: "alpha message" }));
+      expect(message.json()).toEqual(expect.objectContaining({ id: fixture.messageA }));
+      expect(JSON.stringify(message.json())).not.toContain("alpha message");
+      expect(JSON.stringify(message.json())).not.toContain('"preview"');
+      expect(JSON.stringify(message.json())).not.toContain('"text"');
       expectNoStore(message);
 
       const malformedDetail = await request(

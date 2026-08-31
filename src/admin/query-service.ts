@@ -1,53 +1,20 @@
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  gt,
-  gte,
-  isNotNull,
-  isNull,
-  lt,
-  or,
-  sql,
-  type SQL,
-} from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
+import { and, desc, eq, lt, or, sql } from "drizzle-orm";
 
-import type { ActivityMetadata } from "../activity/types.js";
+import { createProjectReadService } from "../control/read-service.js";
 import type { AgentMeshDatabase } from "../db/client.js";
-import { activityEvents, agents, messages, projects } from "../db/schema.js";
+import { projects } from "../db/schema.js";
 import {
   adminListQuerySchema,
   decodeAdminCursor,
   encodeAdminCursor,
-  eventListQuerySchema,
-  messageListQuerySchema,
   type AdminListQuery,
   type EventListQuery,
   type MessageListQuery,
 } from "./contracts.js";
 
-const ONLINE_WINDOW_MS = 5 * 60 * 1_000;
-const IDLE_WINDOW_MS = 30 * 60 * 1_000;
-
 interface AdminQueryServiceDependencies {
   db: AgentMeshDatabase;
   clock?: () => Date;
-}
-
-type Presence = "online" | "idle" | "offline";
-
-function presenceAt(lastSeenAt: Date, now: Date): Presence {
-  const elapsed = now.getTime() - lastSeenAt.getTime();
-  if (elapsed <= ONLINE_WINDOW_MS) return "online";
-  if (elapsed <= IDLE_WINDOW_MS) return "idle";
-  return "offline";
-}
-
-export function previewMessage(text: string): string {
-  const points = [...text];
-  return points.length <= 160 ? text : `${points.slice(0, 160).join("")}…`;
 }
 
 function createdPage<T extends { created_at: string; id: string }>(items: T[], limit: number) {
@@ -55,334 +22,47 @@ function createdPage<T extends { created_at: string; id: string }>(items: T[], l
   const finalItem = page.at(-1);
   return {
     items: page,
-    next_cursor:
-      items.length > limit && finalItem !== undefined
-        ? encodeAdminCursor({
-            kind: "created",
-            created_at: finalItem.created_at,
-            id: finalItem.id,
-          })
-        : null,
+    next_cursor: items.length > limit && finalItem !== undefined
+      ? encodeAdminCursor({ kind: "created", created_at: finalItem.created_at, id: finalItem.id })
+      : null,
   };
 }
 
-function sequenceHistoryPage<T extends { sequence: number }>(items: T[], limit: number) {
-  const page = items.slice(0, limit);
-  const finalItem = page.at(-1);
-  return {
-    items: page,
-    next_cursor:
-      items.length > limit && finalItem !== undefined
-        ? encodeAdminCursor({ kind: "sequence", sequence: finalItem.sequence })
-        : null,
-    has_more: false,
-  };
-}
-
-function liveSequencePage<T>(items: T[], limit: number) {
-  return {
-    items: items.slice(0, limit),
-    next_cursor: null,
-    has_more: items.length > limit,
-  };
-}
-
+/**
+ * Compatibility adapter for the emergency admin-token surface.
+ * Its message DTOs use operator scope and therefore contain metadata only.
+ */
 export function createAdminQueryService(dependencies: AdminQueryServiceDependencies) {
   const { db } = dependencies;
-  const clock = dependencies.clock ?? (() => new Date());
-
-  async function projectExists(projectId: string): Promise<boolean> {
-    const [project] = await db
-      .select({ id: projects.id })
-      .from(projects)
-      .where(eq(projects.id, projectId))
-      .limit(1);
-    return project !== undefined;
-  }
-
-  async function projectAgentExists(projectId: string, agentId: string): Promise<boolean> {
-    const [agent] = await db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(and(eq(agents.projectId, projectId), eq(agents.id, agentId)))
-      .limit(1);
-    return agent !== undefined;
-  }
+  const readService = createProjectReadService(dependencies);
+  const operatorScope = { kind: "operator" } as const;
 
   async function listProjects(input: AdminListQuery) {
     const query = adminListQuerySchema.parse(input);
     const cursor = query.cursor === undefined ? undefined : decodeAdminCursor(query.cursor);
     const createdAt = sql<string>`to_char(${projects.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
-    const rows = await db
-      .select({ id: projects.id, name: projects.name, created_at: createdAt })
+    const rows = await db.select({ id: projects.id, name: projects.name, created_at: createdAt })
       .from(projects)
-      .where(
-        cursor?.kind === "created"
-          ? or(
-              lt(createdAt, cursor.created_at),
-              and(eq(createdAt, cursor.created_at), lt(projects.id, cursor.id)),
-            )
-          : undefined,
-      )
+      .where(cursor?.kind === "created"
+        ? or(
+            lt(createdAt, cursor.created_at),
+            and(eq(createdAt, cursor.created_at), lt(projects.id, cursor.id)),
+          )
+        : undefined)
       .orderBy(desc(projects.createdAt), desc(projects.id))
       .limit(query.limit + 1);
     return createdPage(rows, query.limit);
   }
 
-  async function getSummary(projectId: string) {
-    const createdAt = sql<string>`to_char(${projects.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
-    const [project] = await db
-      .select({ id: projects.id, name: projects.name, created_at: createdAt })
-      .from(projects)
-      .where(eq(projects.id, projectId))
-      .limit(1);
-    if (project === undefined) return { found: false as const };
-
-    const now = clock();
-    const onlineThreshold = new Date(now.getTime() - ONLINE_WINDOW_MS);
-    const idleThreshold = new Date(now.getTime() - IDLE_WINDOW_MS);
-    const [[agentCounts], [messageCounts], [failureCounts]] = await Promise.all([
-      db
-        .select({
-          online: sql<number>`count(*) filter (where ${agents.lastSeenAt} >= ${onlineThreshold})::integer`,
-          idle: sql<number>`count(*) filter (where ${agents.lastSeenAt} < ${onlineThreshold} and ${agents.lastSeenAt} >= ${idleThreshold})::integer`,
-          offline: sql<number>`count(*) filter (where ${agents.lastSeenAt} < ${idleThreshold})::integer`,
-          total: sql<number>`count(*)::integer`,
-        })
-        .from(agents)
-        .where(eq(agents.projectId, projectId)),
-      db
-        .select({
-          total: sql<number>`count(*)::integer`,
-          unacknowledged: sql<number>`count(*) filter (where ${messages.acknowledgedAt} is null)::integer`,
-        })
-        .from(messages)
-        .where(eq(messages.projectId, projectId)),
-      db
-        .select({ total: sql<number>`count(*)::integer` })
-        .from(activityEvents)
-        .where(
-          and(
-            eq(activityEvents.projectId, projectId),
-            eq(activityEvents.outcome, "failure"),
-            gte(activityEvents.createdAt, new Date(now.getTime() - 24 * 60 * 60 * 1_000)),
-          ),
-        ),
-    ]);
-
-    return {
-      found: true as const,
-      data: {
-        project,
-        agents: agentCounts ?? { online: 0, idle: 0, offline: 0, total: 0 },
-        messages: messageCounts ?? { total: 0, unacknowledged: 0 },
-        failures_last_24h: failureCounts?.total ?? 0,
-      },
-    };
-  }
-
-  async function listAgents(projectId: string, input: AdminListQuery) {
-    const query = adminListQuerySchema.parse(input);
-    if (!(await projectExists(projectId))) return { found: false as const };
-    const cursor = query.cursor === undefined ? undefined : decodeAdminCursor(query.cursor);
-    const createdAt = sql<string>`to_char(${agents.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
-    const rows = await db
-      .select({
-        id: agents.id,
-        name: agents.name,
-        client: agents.client,
-        capabilities: agents.capabilities,
-        last_seen_at: agents.lastSeenAt,
-        created_at: createdAt,
-      })
-      .from(agents)
-      .where(
-        and(
-          eq(agents.projectId, projectId),
-          cursor?.kind === "created"
-            ? or(
-                lt(createdAt, cursor.created_at),
-                and(eq(createdAt, cursor.created_at), lt(agents.id, cursor.id)),
-              )
-            : undefined,
-        ),
-      )
-      .orderBy(desc(agents.createdAt), desc(agents.id))
-      .limit(query.limit + 1);
-    const now = clock();
-    return {
-      found: true as const,
-      data: createdPage(
-        rows.map((row) => ({
-          ...row,
-          status: presenceAt(row.last_seen_at, now),
-          last_seen_at: row.last_seen_at.toISOString(),
-        })),
-        query.limit,
-      ),
-    };
-  }
-
-  async function listMessages(projectId: string, input: MessageListQuery) {
-    const query = messageListQuerySchema.parse(input);
-    if (!(await projectExists(projectId))) return { found: false as const };
-    if (query.agent_id !== undefined && !(await projectAgentExists(projectId, query.agent_id))) {
-      return { found: false as const };
-    }
-    const sender = alias(agents, "admin_message_sender");
-    const recipient = alias(agents, "admin_message_recipient");
-    const cursorValue = query.cursor ?? query.after;
-    const cursor = cursorValue === undefined ? undefined : decodeAdminCursor(cursorValue);
-    const filters: SQL[] = [eq(messages.projectId, projectId)];
-    if (query.agent_id !== undefined) {
-      const agentFilter = or(
-        eq(messages.senderAgentId, query.agent_id),
-        eq(messages.recipientAgentId, query.agent_id),
-      );
-      if (agentFilter !== undefined) filters.push(agentFilter);
-    }
-    if (query.acknowledged === true) filters.push(isNotNull(messages.acknowledgedAt));
-    if (query.acknowledged === false) filters.push(isNull(messages.acknowledgedAt));
-    if (cursor?.kind === "sequence") {
-      filters.push(query.after === undefined ? lt(messages.sequence, cursor.sequence) : gt(messages.sequence, cursor.sequence));
-    }
-    const rows = await db
-      .select({
-        sequence: messages.sequence,
-        id: messages.id,
-        sender_id: sender.id,
-        sender_name: sender.name,
-        recipient_id: recipient.id,
-        recipient_name: recipient.name,
-        text: messages.text,
-        created_at: messages.createdAt,
-        acknowledged_at: messages.acknowledgedAt,
-      })
-      .from(messages)
-      .innerJoin(sender, and(eq(sender.id, messages.senderAgentId), eq(sender.projectId, projectId)))
-      .innerJoin(
-        recipient,
-        and(eq(recipient.id, messages.recipientAgentId), eq(recipient.projectId, projectId)),
-      )
-      .where(and(...filters))
-      .orderBy(query.after === undefined ? desc(messages.sequence) : asc(messages.sequence))
-      .limit(query.limit + 1);
-    const mapped = rows.map((row) => ({
-      sequence: row.sequence,
-      id: row.id,
-      sender: { id: row.sender_id, name: row.sender_name },
-      recipient: { id: row.recipient_id, name: row.recipient_name },
-      preview: previewMessage(row.text),
-      created_at: row.created_at.toISOString(),
-      acknowledged_at: row.acknowledged_at?.toISOString() ?? null,
-    }));
-    return {
-      found: true as const,
-      data: query.after === undefined ? sequenceHistoryPage(mapped, query.limit) : liveSequencePage(mapped, query.limit),
-    };
-  }
-
-  async function getMessage(projectId: string, messageId: string) {
-    if (!(await projectExists(projectId))) return { found: false as const };
-    const sender = alias(agents, "admin_message_detail_sender");
-    const recipient = alias(agents, "admin_message_detail_recipient");
-    const [row] = await db
-      .select({
-        sequence: messages.sequence,
-        id: messages.id,
-        sender_id: sender.id,
-        sender_name: sender.name,
-        recipient_id: recipient.id,
-        recipient_name: recipient.name,
-        text: messages.text,
-        created_at: messages.createdAt,
-        acknowledged_at: messages.acknowledgedAt,
-      })
-      .from(messages)
-      .innerJoin(sender, and(eq(sender.id, messages.senderAgentId), eq(sender.projectId, projectId)))
-      .innerJoin(
-        recipient,
-        and(eq(recipient.id, messages.recipientAgentId), eq(recipient.projectId, projectId)),
-      )
-      .where(and(eq(messages.projectId, projectId), eq(messages.id, messageId)))
-      .limit(1);
-    if (row === undefined) return { found: false as const };
-    return {
-      found: true as const,
-      data: {
-        sequence: row.sequence,
-        id: row.id,
-        sender: { id: row.sender_id, name: row.sender_name },
-        recipient: { id: row.recipient_id, name: row.recipient_name },
-        preview: previewMessage(row.text),
-        text: row.text,
-        created_at: row.created_at.toISOString(),
-        acknowledged_at: row.acknowledged_at?.toISOString() ?? null,
-      },
-    };
-  }
-
-  async function listEvents(projectId: string, input: EventListQuery) {
-    const query = eventListQuerySchema.parse(input);
-    if (!(await projectExists(projectId))) return { found: false as const };
-    if (query.agent_id !== undefined && !(await projectAgentExists(projectId, query.agent_id))) {
-      return { found: false as const };
-    }
-    const actor = alias(agents, "admin_event_actor");
-    const target = alias(agents, "admin_event_target");
-    const cursorValue = query.cursor ?? query.after;
-    const cursor = cursorValue === undefined ? undefined : decodeAdminCursor(cursorValue);
-    const filters: SQL[] = [eq(activityEvents.projectId, projectId)];
-    if (query.agent_id !== undefined) filters.push(eq(activityEvents.actorAgentId, query.agent_id));
-    if (query.event_type !== undefined) filters.push(eq(activityEvents.eventType, query.event_type));
-    if (query.outcome !== undefined) filters.push(eq(activityEvents.outcome, query.outcome));
-    if (cursor?.kind === "sequence") {
-      filters.push(
-        query.after === undefined
-          ? lt(activityEvents.sequence, cursor.sequence)
-          : gt(activityEvents.sequence, cursor.sequence),
-      );
-    }
-    const rows = await db
-      .select({
-        sequence: activityEvents.sequence,
-        id: activityEvents.id,
-        request_id: activityEvents.requestId,
-        event_type: activityEvents.eventType,
-        outcome: activityEvents.outcome,
-        actor_id: actor.id,
-        actor_name: actor.name,
-        target_id: target.id,
-        target_name: target.name,
-        message_id: activityEvents.messageId,
-        error_code: activityEvents.errorCode,
-        metadata: activityEvents.metadata,
-        created_at: activityEvents.createdAt,
-      })
-      .from(activityEvents)
-      .leftJoin(actor, and(eq(actor.id, activityEvents.actorAgentId), eq(actor.projectId, projectId)))
-      .leftJoin(target, and(eq(target.id, activityEvents.targetAgentId), eq(target.projectId, projectId)))
-      .where(and(...filters))
-      .orderBy(query.after === undefined ? desc(activityEvents.sequence) : asc(activityEvents.sequence))
-      .limit(query.limit + 1);
-    const mapped = rows.map((row) => ({
-      sequence: row.sequence,
-      id: row.id,
-      request_id: row.request_id,
-      event_type: row.event_type,
-      outcome: row.outcome,
-      actor: row.actor_id === null ? null : { id: row.actor_id, name: row.actor_name as string },
-      target: row.target_id === null ? null : { id: row.target_id, name: row.target_name as string },
-      message_id: row.message_id,
-      error_code: row.error_code,
-      metadata: row.metadata as ActivityMetadata,
-      created_at: row.created_at.toISOString(),
-    }));
-    return {
-      found: true as const,
-      data: query.after === undefined ? sequenceHistoryPage(mapped, query.limit) : liveSequencePage(mapped, query.limit),
-    };
-  }
+  const getSummary = (projectId: string) => readService.getOverview(operatorScope, projectId);
+  const listAgents = (projectId: string, input: AdminListQuery) =>
+    readService.listAgents(operatorScope, projectId, input);
+  const listMessages = (projectId: string, input: MessageListQuery) =>
+    readService.listMessages(operatorScope, projectId, input);
+  const getMessage = (projectId: string, messageId: string) =>
+    readService.getMessage(operatorScope, projectId, messageId);
+  const listEvents = (projectId: string, input: EventListQuery) =>
+    readService.listEvents(operatorScope, projectId, input);
 
   return { listProjects, getSummary, listAgents, listMessages, getMessage, listEvents };
 }

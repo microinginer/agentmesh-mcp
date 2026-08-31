@@ -3,6 +3,7 @@ export const auditEventTypes = [
   "project.created", "project.archived", "project.restored", "project.deleted",
   "connection.created", "connection.revoked",
   "operator.user_blocked", "operator.user_unblocked", "operator.project_archived",
+  "operator.project_owner_assigned",
 ] as const;
 
 export type AuditEventType = (typeof auditEventTypes)[number];

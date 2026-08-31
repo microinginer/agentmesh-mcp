@@ -102,7 +102,7 @@ export function createProjectService(dependencies: ProjectServiceDependencies) {
 
       if (project.ownerUserId !== null) {
         const [owner] = await transaction.select({ blockedAt: users.blockedAt }).from(users)
-          .where(eq(users.id, project.ownerUserId)).limit(1);
+          .where(eq(users.id, project.ownerUserId)).limit(1).for("update");
         if (owner === undefined || owner.blockedAt !== null) throw projectAuthInvalid();
       }
 

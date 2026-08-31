@@ -9,6 +9,7 @@ import {
 import type { AuthInfo } from "@modelcontextprotocol/server";
 
 import { registerControlRoutes } from "./control/routes.js";
+import { registerOperatorRoutes } from "./control/operator-routes.js";
 import type { AgentMeshDatabase } from "./db/client.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import type { AdminRouteDependencies } from "./admin/routes.js";
@@ -74,6 +75,7 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
     app.register(fastifyCookie);
     registerWebAuthRoutes(app, dependencies.web);
     registerControlRoutes(app, dependencies.web);
+    registerOperatorRoutes(app, dependencies.web);
   }
 
   app.post("/mcp", async (request, reply) => {

@@ -105,7 +105,9 @@ export function createWebAuthMiddleware(dependencies: WebAuthMiddlewareDependenc
   }
 
   async function requireOperator(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    await requireSession(request, reply);
+    if (request.webSession === null) {
+      await requireSession(request, reply);
+    }
     if (reply.sent || request.webSession === null) return;
     if (!dependencies.operatorGitHubIds.has(request.webSession.githubUserId)) {
       sendWebHttpError(request, reply, 403, "OPERATOR_FORBIDDEN");

@@ -113,10 +113,10 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
       });
     }
     if (state.tab === "messages") {
-      head.append(header(["From", "To", "Preview", "Acknowledgement", "When"]));
+      head.append(header(["From", "To", "Message ID", "Acknowledgement", "When"]));
       rows.forEach((item) => {
         const row = document.createElement("tr"); const open = document.createElement("button");
-        open.type = "button"; open.className = "row-button"; open.textContent = item.preview; open.addEventListener("click", () => openMessage(item.id));
+        open.type = "button"; open.className = "row-button"; open.textContent = item.id; open.addEventListener("click", () => openMessage(item.id));
         row.append(cell(item.sender.name), cell(item.recipient.name), cell(open), cell(badge(item.acknowledged_at ? "Acknowledged" : "Unacknowledged", item.acknowledged_at ? "success" : "failure")), cell(formatTime(item.created_at))); body.append(row);
       });
     }
@@ -160,7 +160,11 @@ export const ADMIN_BROWSER_SOURCE = String.raw`
     try {
       const item = await request(projectUrl(context.projectId) + "/messages/" + encodeURIComponent(messageId));
       if (!current(context)) return;
-      setText("drawer-title", "Message details"); setText("drawer-text", item.text);
+      const safe = {
+        sequence: item.sequence, id: item.id, sender: item.sender, recipient: item.recipient,
+        created_at: item.created_at, acknowledged_at: item.acknowledged_at
+      };
+      setText("drawer-title", "Message metadata"); setText("drawer-text", JSON.stringify(safe, null, 2));
       byId("detail-drawer").hidden = false; byId("drawer-close").focus();
     } catch { disconnected(context); }
   };

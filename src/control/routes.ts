@@ -1,6 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { AuditService } from "../audit/service.js";
+import {
+  adminListQuerySchema,
+  eventListQuerySchema,
+  messageListQuerySchema,
+} from "../admin/contracts.js";
 import type { WebAuthConfig } from "../config.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { sendWebHttpError } from "../http-errors.js";
@@ -14,6 +19,7 @@ import {
   deleteProjectBodySchema,
   projectIdempotencyKeySchema,
   projectListQuerySchema,
+  projectMessagePathSchema,
   projectPathSchema,
 } from "./contracts.js";
 import {
@@ -27,6 +33,10 @@ import {
   createControlProjectService,
   type PublicControlProject,
 } from "./project-service.js";
+import {
+  createProjectReadService,
+  ProjectReadUnavailableError,
+} from "./read-service.js";
 
 const NO_STORE = "no-store";
 const MAX_IDEMPOTENCY_HEADER_LENGTH = 64;
@@ -110,11 +120,47 @@ function parseConnectionPath(request: FastifyRequest): { projectId: string; conn
   return parsed.success ? parsed.data : null;
 }
 
+function parseMessagePath(request: FastifyRequest): { projectId: string; messageId: string } | null {
+  const parsed = projectMessagePathSchema.safeParse(request.params);
+  return parsed.success ? parsed.data : null;
+}
+
+function parseReadQuery(
+  query: unknown,
+  options: {
+    booleans?: readonly string[];
+    numbers?: readonly string[];
+    strings: readonly string[];
+  },
+): Record<string, string | number | boolean> | null {
+  if (query === null || typeof query !== "object" || Array.isArray(query)) return null;
+  const booleans = new Set(options.booleans);
+  const numbers = new Set(options.numbers);
+  const allowed = new Set([...options.strings, ...booleans, ...numbers]);
+  const result: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (!allowed.has(key) || typeof value !== "string" || value.length > 684) return null;
+    if (numbers.has(key)) {
+      if (!/^[1-9][0-9]{0,2}$/.test(value)) return null;
+      result[key] = Number(value);
+    } else if (booleans.has(key)) {
+      if (value !== "true" && value !== "false") return null;
+      result[key] = value === "true";
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 function invalidRequest(request: FastifyRequest, reply: FastifyReply) {
   return sendWebHttpError(request, reply, 400, "INVALID_REQUEST");
 }
 
 function controlFailure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
+  if (error instanceof ProjectReadUnavailableError) {
+    return sendWebHttpError(request, reply, 503, "CONTROL_UNAVAILABLE");
+  }
   if (!(error instanceof ControlProjectError) && !(error instanceof ConnectionControlError)) {
     return sendWebHttpError(request, reply, 503, "CONTROL_UNAVAILABLE");
   }
@@ -154,6 +200,10 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     db: dependencies.db,
     audit: dependencies.auditService,
     tokenTtlDays: dependencies.config.tokenTtlDays,
+    ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
+  });
+  const readService = createProjectReadService({
+    db: dependencies.db,
     ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
   });
   const noStore = (_request: FastifyRequest, reply: FastifyReply, done: () => void) => {
@@ -222,6 +272,108 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
       return project === null
         ? sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND")
         : reply.send({ project: publicProject(project) });
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/overview", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const projectId = parsePath(request);
+    if (projectId === null || !emptyQuery(request.query)) return invalidRequest(request, reply);
+    try {
+      const result = await readService.getOverview(
+        { kind: "owner", userId: request.webSession.userId },
+        projectId,
+      );
+      return result.found
+        ? reply.send({ overview: result.data })
+        : sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/agents", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const projectId = parsePath(request);
+    const query = parseReadQuery(request.query, { strings: ["cursor"], numbers: ["limit"] });
+    const parsed = query === null ? null : adminListQuerySchema.safeParse(query);
+    if (projectId === null || parsed === null || !parsed.success) return invalidRequest(request, reply);
+    try {
+      const result = await readService.listAgents(
+        { kind: "owner", userId: request.webSession.userId },
+        projectId,
+        parsed.data,
+      );
+      return result.found
+        ? reply.send(result.data)
+        : sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/messages", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const projectId = parsePath(request);
+    const query = parseReadQuery(request.query, {
+      strings: ["agent_id", "cursor", "after"],
+      booleans: ["acknowledged"],
+      numbers: ["limit"],
+    });
+    const parsed = query === null ? null : messageListQuerySchema.safeParse(query);
+    if (projectId === null || parsed === null || !parsed.success) return invalidRequest(request, reply);
+    try {
+      const result = await readService.listMessages(
+        { kind: "owner", userId: request.webSession.userId },
+        projectId,
+        parsed.data,
+      );
+      return result.found
+        ? reply.send(result.data)
+        : sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/messages/:messageId", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const path = parseMessagePath(request);
+    if (path === null || !emptyQuery(request.query)) return invalidRequest(request, reply);
+    try {
+      const result = await readService.getMessage(
+        { kind: "owner", userId: request.webSession.userId },
+        path.projectId,
+        path.messageId,
+      );
+      return result.found
+        ? reply.send({ message: result.data })
+        : sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/events", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const projectId = parsePath(request);
+    const query = parseReadQuery(request.query, {
+      strings: ["agent_id", "event_type", "outcome", "cursor", "after"],
+      numbers: ["limit"],
+    });
+    const parsed = query === null ? null : eventListQuerySchema.safeParse(query);
+    if (projectId === null || parsed === null || !parsed.success) return invalidRequest(request, reply);
+    try {
+      const result = await readService.listEvents(
+        { kind: "owner", userId: request.webSession.userId },
+        projectId,
+        parsed.data,
+      );
+      return result.found
+        ? reply.send(result.data)
+        : sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
     } catch (error) {
       return controlFailure(error, request, reply);
     }

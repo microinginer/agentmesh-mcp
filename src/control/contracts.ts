@@ -20,6 +20,15 @@ export const projectPathSchema = z.object({
   projectId: uuidV4Schema,
 }).strict();
 
+export const projectMessagePathSchema = z.object({
+  projectId: uuidV4Schema,
+  messageId: uuidV4Schema,
+}).strict();
+
+export const operatorUserPathSchema = z.object({
+  userId: uuidV4Schema,
+}).strict();
+
 export const projectIdempotencyKeySchema = uuidV4Schema;
 
 export const projectListQuerySchema = z.object({

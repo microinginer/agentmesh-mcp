@@ -43,6 +43,13 @@
       "when": 1788140555724,
       "tag": "0005_oauth_attempt_digest_length",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788146718110,
+      "tag": "0006_tidy_wendell_vaughn",
+      "breakpoints": true
     }
   ]
 }

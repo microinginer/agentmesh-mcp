@@ -162,7 +162,8 @@ export const auditEvents = pgTable(
         'auth.login_succeeded', 'auth.login_failed', 'auth.logout',
         'project.created', 'project.archived', 'project.restored', 'project.deleted',
         'connection.created', 'connection.revoked',
-        'operator.user_blocked', 'operator.user_unblocked', 'operator.project_archived'
+        'operator.user_blocked', 'operator.user_unblocked', 'operator.project_archived',
+        'operator.project_owner_assigned'
       )`,
     ),
     index("audit_events_user_created_at_idx").on(table.userId, table.createdAt.desc()),

@@ -8,6 +8,7 @@ import { uuidV4Schema } from "../contracts.js";
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 const MAX_CURSOR_BYTES = 512;
+const MAX_CURSOR_CHARACTERS = 684;
 
 export type SequenceCursor = { kind: "sequence"; sequence: number };
 export type CreatedCursor = { kind: "created"; created_at: string; id: string };
@@ -62,7 +63,7 @@ export function decodeAdminCursor(value: string): AdminCursor {
 }
 
 function cursorSchema(kind: AdminCursor["kind"]) {
-  return z.string().min(1).superRefine((value, context) => {
+  return z.string().min(1).max(MAX_CURSOR_CHARACTERS).superRefine((value, context) => {
     try {
       if (decodeCursorValue(value).kind !== kind) {
         context.addIssue({ code: "custom", message: "Invalid admin cursor" });

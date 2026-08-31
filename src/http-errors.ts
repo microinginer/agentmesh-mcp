@@ -6,6 +6,9 @@ export type WebHttpErrorCode =
   | "CSRF_FORBIDDEN"
   | "OPERATOR_FORBIDDEN"
   | "INVALID_REQUEST"
+  | "USER_NOT_FOUND"
+  | "USER_BLOCKED"
+  | "USER_STATE_CONFLICT"
   | "PROJECT_NOT_FOUND"
   | "PROJECT_LIMIT_REACHED"
   | "PROJECT_STATE_CONFLICT"
@@ -21,6 +24,9 @@ const messages: Record<WebHttpErrorCode, string> = {
   CSRF_FORBIDDEN: "Request validation failed",
   OPERATOR_FORBIDDEN: "Operator access is required",
   INVALID_REQUEST: "Request validation failed",
+  USER_NOT_FOUND: "User was not found",
+  USER_BLOCKED: "User is blocked",
+  USER_STATE_CONFLICT: "User lifecycle state conflict",
   PROJECT_NOT_FOUND: "Project was not found",
   PROJECT_LIMIT_REACHED: "Active project limit reached",
   PROJECT_STATE_CONFLICT: "Project lifecycle state conflict",
