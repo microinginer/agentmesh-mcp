@@ -16,7 +16,6 @@ const OAUTH_ATTEMPT_MAX_AGE_SECONDS = 5 * 60;
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const MAX_COOKIE_HEADER_LENGTH = 8_192;
 const MAX_COOKIE_FIELDS = 4;
-const MAX_COOKIE_CANDIDATES = 4;
 const MAX_QUERY_LENGTH = 4_096;
 const MAX_QUERY_PARTS = 8;
 const MAX_QUERY_VALUE_LENGTH = 2_048;
@@ -122,10 +121,6 @@ function cookieCandidates(raw: RawCookieFields, name: string): CookieCandidates 
         continue;
       }
       if (candidateName === name) {
-        if (values.length === MAX_COOKIE_CANDIDATES) {
-          invalid = true;
-          continue;
-        }
         values.push(value);
       }
     }
@@ -278,7 +273,7 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
     reply.clearCookie(names.oauth, commonCookieOptions);
     const rawCookies = rawCookieFields(request);
     const attemptCookies = cookieCandidates(rawCookies, names.oauth);
-    const attempts = await Promise.all(attemptCookies.values.map((value) => oauth.consume(value)));
+    const attempts = await oauth.consume(attemptCookies.values);
     const attempt = attempts[0];
     if (rawCookies.repeated || attemptCookies.invalid || attemptCookies.values.length !== 1
       || attempt === undefined || attempt === null) {

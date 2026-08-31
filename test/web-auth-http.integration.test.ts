@@ -3,7 +3,7 @@ import { connect } from "node:net";
 import type { FastifyInstance } from "fastify";
 
 import { count, eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createAuditService } from "../src/audit/service.js";
 import type { WebAuthConfig } from "../src/config.js";
@@ -26,6 +26,23 @@ const database = createDatabase(databaseUrl);
 const signingKey = Buffer.from("agentmesh-test-signing-key-32-bytes!", "utf8");
 const webAuthKey = Buffer.alloc(32, 15);
 const accessToken = "fake-github-access-token-never-persisted";
+const MAX_COOKIE_HEADER_LENGTH = 8_192;
+
+async function within<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("bounded OAuth test timed out")), timeoutMs);
+    void operation.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
 
 function cookiePair(response: { headers: Record<string, unknown> }, name: string): string {
   const setCookie = response.headers["set-cookie"];
@@ -1009,6 +1026,156 @@ describe("web OAuth HTTP routes", () => {
       expect(github.exchanges).toHaveLength(0);
       const [sessions] = await database.db.select({ total: count() }).from(webSessions);
       expect(sessions?.total).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([0, 2, 4])("consumes a five-cookie target identically at position %i", async (targetPosition) => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const attempts = [];
+      for (let index = 0; index < 5; index += 1) attempts.push(await start(app));
+      const target = attempts[0]!;
+      const ordered = attempts.slice(1);
+      ordered.splice(targetPosition, 0, target);
+      const transaction = vi.spyOn(database.db, "transaction");
+      transaction.mockClear();
+
+      const ambiguous = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${target.state}`,
+        headers: { cookie: ordered.map((attempt) => attempt.cookie).join("; ") },
+      });
+      const replay = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${target.state}`,
+        headers: { cookie: target.cookie },
+      });
+
+      expect([ambiguous.headers.location, replay.headers.location]).toEqual([
+        "/?auth_error=github",
+        "/?auth_error=github",
+      ]);
+      expect(transaction).toHaveBeenCalledTimes(2);
+      expect(github.exchanges).toHaveLength(0);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(0);
+      const storedAttempts = await database.db.select({ consumedAt: oauthAttempts.consumedAt }).from(oauthAttempts);
+      expect(storedAttempts).toHaveLength(5);
+      expect(storedAttempts.every((row) => row.consumedAt !== null)).toBe(true);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents)).toEqual([
+        { eventType: "auth.login_failed" },
+        { eventType: "auth.login_failed" },
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("consumes the maximum matching candidate set in one bounded transaction", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const shortestCandidate = "agentmesh_oauth=x";
+      const candidateCount = Math.floor((MAX_COOKIE_HEADER_LENGTH + 2) / (shortestCandidate.length + 2));
+      const cookieField = Array.from({ length: candidateCount }, () => shortestCandidate).join("; ");
+      expect(candidateCount).toBe(431);
+      expect(cookieField).toHaveLength(8_187);
+      expect(`${cookieField}; ${shortestCandidate}`).toHaveLength(8_206);
+      const transaction = vi.spyOn(database.db, "transaction");
+      transaction.mockClear();
+
+      const callback = await within(app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${"s".repeat(43)}`,
+        headers: { cookie: cookieField },
+      }), 1_500);
+
+      expect(callback.headers.location).toBe("/?auth_error=github");
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(github.exchanges).toHaveLength(0);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(0);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents)).toEqual([
+        { eventType: "auth.login_failed" },
+      ]);
+      expect(await database.db.select({ consumedAt: oauthAttempts.consumedAt }).from(oauthAttempts)).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("batch-consumes duplicate OAuth values once and rejects every replay", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const target = await start(app);
+      const transaction = vi.spyOn(database.db, "transaction");
+      transaction.mockClear();
+      const duplicated = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${target.state}`,
+        headers: { cookie: Array.from({ length: 5 }, () => target.cookie).join("; ") },
+      });
+      const replay = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${target.state}`,
+        headers: { cookie: target.cookie },
+      });
+
+      expect([duplicated.headers.location, replay.headers.location]).toEqual([
+        "/?auth_error=github",
+        "/?auth_error=github",
+      ]);
+      expect(transaction).toHaveBeenCalledTimes(2);
+      expect(github.exchanges).toHaveLength(0);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(0);
+      expect((await database.db.select({ consumedAt: oauthAttempts.consumedAt }).from(oauthAttempts))[0]?.consumedAt)
+        .not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps overlapping concurrent OAuth batches single-use", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const attempts = [];
+      for (let index = 0; index < 3; index += 1) attempts.push(await start(app));
+      const transaction = vi.spyOn(database.db, "transaction");
+      transaction.mockClear();
+      const ambiguous = await Promise.all([
+        app.inject({
+          method: "GET",
+          url: `/auth/github/callback?code=one-use&state=${attempts[0]!.state}`,
+          headers: { cookie: [attempts[0]!.cookie, attempts[1]!.cookie].join("; ") },
+        }),
+        app.inject({
+          method: "GET",
+          url: `/auth/github/callback?code=one-use&state=${attempts[2]!.state}`,
+          headers: { cookie: [attempts[1]!.cookie, attempts[2]!.cookie].join("; ") },
+        }),
+      ]);
+      const replays = [];
+      for (const attempt of attempts) {
+        replays.push(await app.inject({
+          method: "GET",
+          url: `/auth/github/callback?code=one-use&state=${attempt.state}`,
+          headers: { cookie: attempt.cookie },
+        }));
+      }
+
+      expect([...ambiguous, ...replays].map((response) => response.headers.location))
+        .toEqual(Array.from({ length: 5 }, () => "/?auth_error=github"));
+      expect(transaction).toHaveBeenCalledTimes(5);
+      expect(github.exchanges).toHaveLength(0);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(0);
+      const storedAttempts = await database.db.select({ consumedAt: oauthAttempts.consumedAt }).from(oauthAttempts);
+      expect(storedAttempts).toHaveLength(3);
+      expect(storedAttempts.every((row) => row.consumedAt !== null)).toBe(true);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents))
+        .toEqual(Array.from({ length: 5 }, () => ({ eventType: "auth.login_failed" })));
     } finally {
       await app.close();
     }

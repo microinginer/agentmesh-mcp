@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, gt, inArray, isNull, sql } from "drizzle-orm";
 
 import type { AuditService } from "../audit/service.js";
 import type { AgentMeshDatabase } from "../db/client.js";
@@ -19,7 +19,7 @@ const EXPIRED_ATTEMPT_CLEANUP_LIMIT = 128;
 
 export interface OAuthService {
   start(returnTo: string): Promise<{ authorizationUrl: URL; attemptCookie: string } | null>;
-  consume(attemptCookie: string): Promise<OAuthAttempt | null>;
+  consume(attemptCookies: readonly string[]): Promise<Array<OAuthAttempt | null>>;
   complete(input: {
     attempt: OAuthAttempt;
     code: string;
@@ -105,27 +105,49 @@ export function createOAuthService(dependencies: OAuthServiceDependencies): OAut
     return { authorizationUrl: dependencies.oauthClient.authorizationUrl(state, challenge), attemptCookie };
   }
 
-  async function consume(attemptCookie: string): Promise<OAuthAttempt | null> {
+  async function consume(attemptCookies: readonly string[]): Promise<Array<OAuthAttempt | null>> {
+    if (attemptCookies.length === 0) return [];
     const now = clock();
-    if (!validDate(now)) return null;
+    if (!validDate(now)) return attemptCookies.map(() => null);
+    const candidates = attemptCookies.map((cookie) => {
+      const digest = attemptDigest(cookie);
+      return { cookie, digest, digestKey: digest.toString("hex") };
+    });
+    const uniqueDigests = [...new Map(candidates.map((candidate) => [
+      candidate.digestKey,
+      candidate.digest,
+    ])).values()];
     try {
       const marked = await dependencies.db.transaction(async (transaction) => {
-        const rows = await transaction
+        return transaction
           .update(oauthAttempts)
           .set({ consumedAt: now })
           .where(and(
-            eq(oauthAttempts.attemptDigest, attemptDigest(attemptCookie)),
+            inArray(oauthAttempts.attemptDigest, uniqueDigests),
             gt(oauthAttempts.expiresAt, now),
             isNull(oauthAttempts.consumedAt),
           ))
-          .returning({ expiresAt: oauthAttempts.expiresAt });
-        return rows[0] ?? null;
+          .returning({
+            attemptDigest: oauthAttempts.attemptDigest,
+            expiresAt: oauthAttempts.expiresAt,
+          });
       });
-      if (marked === null) return null;
-      const attempt = openOAuthAttempt(attemptCookie, dependencies.oauthCookieKey, now);
-      return attempt.expiresAt === marked.expiresAt.getTime() ? attempt : null;
+      const markedByDigest = new Map(marked.map((row) => [
+        row.attemptDigest.toString("hex"),
+        row.expiresAt,
+      ]));
+      return candidates.map((candidate) => {
+        const markedExpiresAt = markedByDigest.get(candidate.digestKey);
+        if (markedExpiresAt === undefined) return null;
+        try {
+          const attempt = openOAuthAttempt(candidate.cookie, dependencies.oauthCookieKey, now);
+          return attempt.expiresAt === markedExpiresAt.getTime() ? attempt : null;
+        } catch {
+          return null;
+        }
+      });
     } catch {
-      return null;
+      return attemptCookies.map(() => null);
     }
   }
 
