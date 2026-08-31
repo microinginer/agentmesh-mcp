@@ -99,6 +99,23 @@ describe("runtime configuration", () => {
     expect(config.web).toBeNull();
   });
 
+  it("keeps web authentication disabled when every hosted setting is whitespace", () => {
+    const config = loadConfig({
+      DATABASE_URL: databaseUrl,
+      AGENT_SESSION_SIGNING_KEY: key,
+      GITHUB_OAUTH_CLIENT_ID: " \t ",
+      GITHUB_OAUTH_CLIENT_SECRET: " \t ",
+      GITHUB_OAUTH_CALLBACK_URL: " \t ",
+      AGENTMESH_PUBLIC_ORIGIN: " \t ",
+      AGENTMESH_WEB_AUTH_KEY: " \t ",
+      AGENTMESH_OPERATOR_GITHUB_IDS: " \t ",
+      AGENTMESH_PROJECT_LIMIT: " \t ",
+      AGENTMESH_TOKEN_TTL_DAYS: " \t ",
+    });
+
+    expect(config.web).toBeNull();
+  });
+
   it("enables web auth only when the complete OAuth group is present", () => {
     const config = loadConfig(hostedEnvironment());
 
@@ -130,9 +147,16 @@ describe("runtime configuration", () => {
     expect(config.web).toMatchObject({ projectLimit: 0, tokenTtlDays: 30, secureCookies: false });
   });
 
+  it("treats whitespace-only optional hosted settings as absent", () => {
+    const config = loadConfig(hostedEnvironment({ AGENTMESH_TOKEN_TTL_DAYS: " \t " }));
+
+    expect(config.web?.tokenTtlDays).toBe(90);
+  });
+
   it.each([
     { GITHUB_OAUTH_CLIENT_SECRET: undefined },
     { GITHUB_OAUTH_CLIENT_SECRET: "" },
+    { GITHUB_OAUTH_CLIENT_SECRET: " \t " },
     {
       GITHUB_OAUTH_CLIENT_ID: "",
       GITHUB_OAUTH_CLIENT_SECRET: "",
@@ -145,12 +169,23 @@ describe("runtime configuration", () => {
     },
     { GITHUB_OAUTH_CALLBACK_URL: "https://other.example/auth/github/callback" },
     { GITHUB_OAUTH_CALLBACK_URL: "http://agentmesh.example/auth/github/callback", AGENTMESH_PUBLIC_ORIGIN: "http://agentmesh.example" },
+    { AGENTMESH_PUBLIC_ORIGIN: "https://agentmesh.example/app" },
+    { AGENTMESH_PUBLIC_ORIGIN: "https://agentmesh.example/?unexpected=value" },
+    { AGENTMESH_PUBLIC_ORIGIN: "https://agentmesh.example/#fragment" },
+    { AGENTMESH_PUBLIC_ORIGIN: "https://operator:password@agentmesh.example" },
+    { AGENTMESH_PUBLIC_ORIGIN: "//agentmesh.example" },
+    { GITHUB_OAUTH_CALLBACK_URL: "https://agentmesh.example/auth/github/not-callback" },
+    { GITHUB_OAUTH_CALLBACK_URL: "https://agentmesh.example/auth/github/callback?code=unexpected" },
+    { GITHUB_OAUTH_CALLBACK_URL: "https://agentmesh.example/auth/github/callback#fragment" },
+    { GITHUB_OAUTH_CALLBACK_URL: "https://operator:password@agentmesh.example/auth/github/callback" },
+    { GITHUB_OAUTH_CALLBACK_URL: "//agentmesh.example/auth/github/callback" },
     { AGENTMESH_OPERATOR_GITHUB_IDS: "1,not-a-number" },
     { AGENTMESH_OPERATOR_GITHUB_IDS: "1,,42" },
     { AGENTMESH_PROJECT_LIMIT: "101" },
     { AGENTMESH_PROJECT_LIMIT: "1.5" },
     { AGENTMESH_TOKEN_TTL_DAYS: "0" },
     { AGENTMESH_WEB_AUTH_KEY: Buffer.alloc(31, 4).toString("base64url") },
+    { AGENTMESH_WEB_AUTH_KEY: `${key}=` },
   ])("fails closed for invalid hosted configuration without echoing secrets", (overrides) => {
     const secret = "test-client-secret";
     const error = () => loadConfig(hostedEnvironment(overrides));

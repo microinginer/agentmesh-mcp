@@ -51,12 +51,14 @@ export function digestSessionToken(raw: string, key: Buffer): Buffer {
 export function createSessionCredential(keys: Pick<WebAuthKeys, "sessionDigestKey" | "csrfDigestKey">): SessionCredential {
   const sessionToken = randomBytes(32).toString("base64url");
   const csrfToken = randomBytes(32).toString("base64url");
-  return {
-    sessionToken,
-    csrfToken,
-    sessionDigest: digestSessionToken(sessionToken, keys.sessionDigestKey),
-    csrfDigest: digest(csrfToken, keys.csrfDigestKey),
-  };
+  const credential = {} as SessionCredential;
+  Object.defineProperties(credential, {
+    sessionToken: { value: sessionToken, enumerable: false },
+    csrfToken: { value: csrfToken, enumerable: false },
+    sessionDigest: { value: digestSessionToken(sessionToken, keys.sessionDigestKey), enumerable: false },
+    csrfDigest: { value: digest(csrfToken, keys.csrfDigestKey), enumerable: false },
+  });
+  return credential;
 }
 
 export function verifyCsrfToken(raw: string, digestValue: Buffer, key: Buffer): boolean {

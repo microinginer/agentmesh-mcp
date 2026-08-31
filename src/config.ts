@@ -73,14 +73,14 @@ export interface AgentMeshConfig {
 }
 
 function isBlank(value: string | undefined): boolean {
-  return value === undefined || value.length === 0;
+  return value === undefined || value.trim().length === 0;
 }
 
 function isLoopbackHostname(hostname: string): boolean {
   return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 
-function parseWebUrl(value: string, field: string): URL {
+function parseHostedUrl(value: string, field: string): URL {
   let url: URL;
   try {
     url = new URL(value);
@@ -91,6 +91,22 @@ function parseWebUrl(value: string, field: string): URL {
   const loopbackHttp = url.protocol === "http:" && isLoopbackHostname(url.hostname);
   if ((url.protocol !== "https:" && !loopbackHttp) || url.username !== "" || url.password !== "") {
     throw new Error(`Invalid AgentMesh configuration: ${field}`);
+  }
+  return url;
+}
+
+function parsePublicOrigin(value: string): URL {
+  const url = parseHostedUrl(value, "AGENTMESH_PUBLIC_ORIGIN");
+  if (url.pathname !== "/" || url.search !== "" || url.hash !== "") {
+    throw new Error("Invalid AgentMesh configuration: AGENTMESH_PUBLIC_ORIGIN");
+  }
+  return url;
+}
+
+function parseOAuthCallbackUrl(value: string): URL {
+  const url = parseHostedUrl(value, "GITHUB_OAUTH_CALLBACK_URL");
+  if (url.pathname !== "/auth/github/callback" || url.search !== "" || url.hash !== "") {
+    throw new Error("Invalid AgentMesh configuration: GITHUB_OAUTH_CALLBACK_URL");
   }
   return url;
 }
@@ -140,8 +156,8 @@ function createWebAuthConfig(environment: z.infer<typeof environmentSchema>): We
   const values = Object.fromEntries(
     requiredValues.map(({ name, value }) => [name, value]),
   ) as Record<HostedRequiredEnvironmentName, string>;
-  const callbackUrl = parseWebUrl(values.GITHUB_OAUTH_CALLBACK_URL, "GITHUB_OAUTH_CALLBACK_URL");
-  const publicOrigin = parseWebUrl(values.AGENTMESH_PUBLIC_ORIGIN, "AGENTMESH_PUBLIC_ORIGIN");
+  const callbackUrl = parseOAuthCallbackUrl(values.GITHUB_OAUTH_CALLBACK_URL);
+  const publicOrigin = parsePublicOrigin(values.AGENTMESH_PUBLIC_ORIGIN);
   if (callbackUrl.origin !== publicOrigin.origin) {
     throw new Error("Invalid AgentMesh configuration: GITHUB_OAUTH_CALLBACK_URL, AGENTMESH_PUBLIC_ORIGIN");
   }
@@ -153,9 +169,9 @@ function createWebAuthConfig(environment: z.infer<typeof environmentSchema>): We
     operatorGitHubIds: parseOperatorGitHubIds(values.AGENTMESH_OPERATOR_GITHUB_IDS),
     projectLimit: parseBoundedInteger(values.AGENTMESH_PROJECT_LIMIT, "AGENTMESH_PROJECT_LIMIT", 0, 100),
     tokenTtlDays:
-      environment.AGENTMESH_TOKEN_TTL_DAYS === undefined || environment.AGENTMESH_TOKEN_TTL_DAYS === ""
+      isBlank(environment.AGENTMESH_TOKEN_TTL_DAYS)
         ? DEFAULT_TOKEN_TTL_DAYS
-        : parseBoundedInteger(environment.AGENTMESH_TOKEN_TTL_DAYS, "AGENTMESH_TOKEN_TTL_DAYS", 1, 3650),
+        : parseBoundedInteger(environment.AGENTMESH_TOKEN_TTL_DAYS ?? "", "AGENTMESH_TOKEN_TTL_DAYS", 1, 3650),
     secureCookies: publicOrigin.protocol === "https:",
   } as Omit<WebAuthConfig, "clientSecret" | "authKey">;
 

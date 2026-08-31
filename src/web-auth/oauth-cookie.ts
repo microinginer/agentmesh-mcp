@@ -60,6 +60,10 @@ export function sealOAuthAttempt(attempt: OAuthAttempt, masterKey: Buffer): stri
 
 export function openOAuthAttempt(value: string, masterKey: Buffer, now: Date): OAuthAttempt {
   try {
+    const nowMilliseconds = now.getTime();
+    if (!Number.isFinite(nowMilliseconds)) {
+      throw new Error();
+    }
     if (value.length > OAUTH_COOKIE_MAX_LENGTH) {
       throw new Error();
     }
@@ -80,7 +84,7 @@ export function openOAuthAttempt(value: string, masterKey: Buffer, now: Date): O
     const decipher = createDecipheriv("aes-256-gcm", deriveOAuthCookieKey(masterKey), iv);
     decipher.setAuthTag(tag);
     const attempt = JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8")) as unknown;
-    if (!validAttempt(attempt) || attempt.expiresAt <= now.getTime()) {
+    if (!validAttempt(attempt) || attempt.expiresAt <= nowMilliseconds) {
       throw new Error();
     }
     return attempt;
