@@ -8,6 +8,7 @@ import {
   auditEvents,
   agents,
   oauthIdentities,
+  oauthAttempts,
   projectTokens,
   projects,
   users,
@@ -135,6 +136,38 @@ describe("hosted control-plane schema", () => {
       idleExpiresAt: now,
       absoluteExpiresAt: now,
     })).rejects.toThrow();
+  });
+
+  it("stores only a fixed-length OAuth attempt digest and lifecycle timestamps", async () => {
+    const rawCookie = "v1.this-is-sealed-state-and-verifier-material";
+    const digest = Buffer.alloc(32, 9);
+    const now = new Date("2026-08-31T12:00:00.000Z");
+    await database.db.insert(oauthAttempts).values({
+      attemptDigest: digest,
+      expiresAt: new Date("2026-08-31T12:05:00.000Z"),
+      createdAt: now,
+    });
+
+    const [stored] = await database.db.select().from(oauthAttempts);
+    expect(stored).toEqual({
+      attemptDigest: digest,
+      expiresAt: new Date("2026-08-31T12:05:00.000Z"),
+      consumedAt: null,
+      createdAt: now,
+    });
+    expect(JSON.stringify(stored)).not.toContain(rawCookie);
+    await expect(database.db.insert(oauthAttempts).values({
+      attemptDigest: digest,
+      expiresAt: now,
+      createdAt: now,
+    })).rejects.toThrow();
+    await expect(database.db.insert(oauthAttempts).values({
+      attemptDigest: Buffer.alloc(31, 9),
+      expiresAt: now,
+      createdAt: now,
+    })).rejects.toMatchObject({
+      cause: { constraint: "oauth_attempts_digest_length_check" },
+    });
   });
 
   it("persists only allowlisted audit metadata without a project row", async () => {

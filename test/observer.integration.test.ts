@@ -375,6 +375,7 @@ describe("pgAdmin observer database boundary", () => {
         "users",
         "oauth_identities",
         "web_sessions",
+        "oauth_attempts",
         "audit_events",
       ]) {
         await expectSqlState(client, `SELECT * FROM public.${table} LIMIT 1`);

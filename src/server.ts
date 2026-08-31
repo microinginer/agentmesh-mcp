@@ -33,6 +33,7 @@ export async function startServer(config: AgentMeshConfig): Promise<AgentMeshRun
       const webConfig = config.web;
       const keys = deriveWebAuthKeys(webConfig.authKey);
       return {
+        db: database.db,
         config: webConfig,
         githubClient: createGitHubClient({
           clientId: webConfig.clientId,

@@ -1,0 +1,1 @@
+ALTER TABLE "oauth_attempts" ADD CONSTRAINT "oauth_attempts_digest_length_check" CHECK (octet_length("oauth_attempts"."attempt_digest") = 32);

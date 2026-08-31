@@ -56,6 +56,16 @@ export const webSessions = pgTable("web_sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const oauthAttempts = pgTable("oauth_attempts", {
+  attemptDigest: bytea("attempt_digest").primaryKey(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  check("oauth_attempts_digest_length_check", sql`octet_length(${table.attemptDigest}) = 32`),
+  index("oauth_attempts_expires_at_idx").on(table.expiresAt),
+]);
+
 export const projects = pgTable("projects", {
   id: uuid("id").primaryKey().defaultRandom(),
   ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),

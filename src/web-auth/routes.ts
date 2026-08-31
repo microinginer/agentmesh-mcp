@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { AuditService } from "../audit/service.js";
 import type { WebAuthConfig } from "../config.js";
+import type { AgentMeshDatabase } from "../db/client.js";
 import { sendWebHttpError } from "../http-errors.js";
 import type { GitHubOAuthClient } from "./github-client.js";
 import type { IdentityService } from "./identity-service.js";
@@ -20,6 +21,7 @@ const MAX_CODE_LENGTH = 1_024;
 const noStore = "no-store";
 
 export interface WebAuthRouteDependencies {
+  db: AgentMeshDatabase;
   config: WebAuthConfig;
   githubClient: GitHubOAuthClient;
   identityService: IdentityService;
@@ -53,39 +55,44 @@ function cookieOptions(secure: boolean, maxAge?: number) {
   };
 }
 
-function singleRawHeader(request: FastifyRequest, name: string): string | null {
+type HeaderSelection = { kind: "absent" } | { kind: "valid"; value: string } | { kind: "invalid" };
+
+function singleRawHeader(request: FastifyRequest, name: string): HeaderSelection {
   const headers = request.raw.rawHeaders;
   if (Array.isArray(headers) && headers.length > 0) {
     const values: string[] = [];
     for (let index = 0; index < headers.length; index += 2) {
       if (headers[index]?.toLowerCase() === name) {
         const value = headers[index + 1];
-        if (value === undefined) return null;
+        if (value === undefined) return { kind: "invalid" };
         values.push(value);
       }
     }
-    return values.length === 1 ? (values[0] ?? null) : null;
+    if (values.length === 0) return { kind: "absent" };
+    return values.length === 1 ? { kind: "valid", value: values[0] ?? "" } : { kind: "invalid" };
   }
   const value = request.headers[name];
-  return typeof value === "string" ? value : null;
+  if (value === undefined) return { kind: "absent" };
+  return typeof value === "string" ? { kind: "valid", value } : { kind: "invalid" };
 }
 
-function selectedCookie(header: string | null, name: string): string | null {
-  if (header === null || header.length === 0 || header.length > MAX_COOKIE_HEADER_LENGTH) return null;
+function selectedCookie(header: HeaderSelection, name: string): HeaderSelection {
+  if (header.kind !== "valid") return header;
+  if (header.value.length === 0 || header.value.length > MAX_COOKIE_HEADER_LENGTH) return { kind: "invalid" };
   let selected: string | null = null;
-  for (const item of header.split(";")) {
+  for (const item of header.value.split(";")) {
     const trimmed = item.trim();
     const separator = trimmed.indexOf("=");
-    if (separator <= 0 || trimmed.length === 0) return null;
+    if (separator <= 0 || trimmed.length === 0) return { kind: "invalid" };
     const candidateName = trimmed.slice(0, separator);
     const value = trimmed.slice(separator + 1);
-    if (candidateName.length === 0 || value.length === 0) return null;
+    if (candidateName.length === 0 || value.length === 0) return { kind: "invalid" };
     if (candidateName === name) {
-      if (selected !== null) return null;
+      if (selected !== null) return { kind: "invalid" };
       selected = value;
     }
   }
-  return selected;
+  return selected === null ? { kind: "absent" } : { kind: "valid", value: selected };
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -134,15 +141,22 @@ function strictQuery(url: string): ParsedQuery | null {
 function safeReturnTo(raw: string | undefined): string {
   if (raw === undefined || raw.length === 0 || raw.length > MAX_QUERY_VALUE_LENGTH
     || /%(?:2[fF]|5[cC]|0[0-9a-fA-F]|1[0-9a-fA-F]|7[fF])/.test(raw)) return "/app";
-  const decoded = decodeComponent(raw);
-  if (decoded === null || decoded.length === 0 || decoded.length > MAX_QUERY_VALUE_LENGTH
+  let decoded = raw;
+  for (let index = 0; index < 4; index += 1) {
+    if (/%(?:2[fF]|5[cC]|0[0-9a-fA-F]|1[0-9a-fA-F]|7[fF])/.test(decoded)) return "/app";
+    const next = decodeComponent(decoded);
+    if (next === null) return "/app";
+    if (next === decoded) break;
+    decoded = next;
+  }
+  if (decoded.includes("%") || decoded.length === 0 || decoded.length > MAX_QUERY_VALUE_LENGTH
     || decoded.includes("\\") || !decoded.startsWith("/app")
     || (decoded.length > 4 && !"/?#".includes(decoded[4] ?? ""))) return "/app";
-  const path = decoded.split(/[?#]/, 1)[0] ?? "";
-  if (path.split("/").some((segment) => segment === "." || segment === "..")) return "/app";
   try {
     const resolved = new URL(decoded, "http://agentmesh.invalid");
-    return resolved.origin === "http://agentmesh.invalid" ? decoded : "/app";
+    if (resolved.origin !== "http://agentmesh.invalid"
+      || (resolved.pathname !== "/app" && !resolved.pathname.startsWith("/app/"))) return "/app";
+    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
   } catch {
     return "/app";
   }
@@ -189,6 +203,7 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
   });
   middleware.register(app);
   const oauth = createOAuthService({
+    db: dependencies.db,
     oauthClient: dependencies.githubClient,
     identityService: dependencies.identityService,
     sessionService: dependencies.sessionService,
@@ -199,7 +214,7 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
 
   app.get("/auth/github/start", async (request, reply) => {
     reply.header("Cache-Control", noStore);
-    const started = oauth.start(startReturnTo(request));
+    const started = await oauth.start(startReturnTo(request));
     if (started === null) return failure(reply);
     return reply
       .setCookie(names.oauth, started.attemptCookie, cookieOptions(dependencies.config.secureCookies, OAUTH_ATTEMPT_MAX_AGE_SECONDS))
@@ -211,20 +226,27 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
   app.get("/auth/github/callback", async (request, reply) => {
     reply.header("Cache-Control", noStore);
     reply.clearCookie(names.oauth, commonCookieOptions);
-    const attemptCookie = selectedCookie(singleRawHeader(request, "cookie"), names.oauth);
+    const cookieHeader = singleRawHeader(request, "cookie");
+    const attemptCookie = selectedCookie(cookieHeader, names.oauth);
+    if (attemptCookie.kind !== "valid") return failure(reply);
+    const attempt = await oauth.consume(attemptCookie.value);
+    if (attempt === null) return failure(reply);
     const input = callbackInput(request);
-    if (attemptCookie === null || input === null) return failure(reply);
+    if (input === null) return failure(reply);
 
     let currentSession = null;
-    const sessionToken = selectedCookie(singleRawHeader(request, "cookie"), names.session);
-    if (sessionToken !== null && isCanonicalWebCredential(sessionToken)) {
+    const sessionToken = selectedCookie(cookieHeader, names.session);
+    if (sessionToken.kind === "invalid") return failure(reply);
+    if (sessionToken.kind === "valid") {
+      if (!isCanonicalWebCredential(sessionToken.value)) return failure(reply);
       try {
-        currentSession = await dependencies.sessionService.authenticate(sessionToken);
+        currentSession = await dependencies.sessionService.authenticate(sessionToken.value);
       } catch {
         return failure(reply);
       }
+      if (currentSession === null) return failure(reply);
     }
-    const completed = await oauth.complete({ ...input, attemptCookie, currentSession });
+    const completed = await oauth.complete({ ...input, attempt, currentSession });
     if (completed === null) return failure(reply);
     return reply
       .setCookie(names.session, completed.session.sessionToken, cookieOptions(dependencies.config.secureCookies, SESSION_MAX_AGE_SECONDS))

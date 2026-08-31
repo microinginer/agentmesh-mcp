@@ -1,6 +1,9 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 
 import type { AuditService } from "../audit/service.js";
+import type { AgentMeshDatabase } from "../db/client.js";
+import { oauthAttempts } from "../db/schema.js";
 import type { GitHubOAuthClient } from "./github-client.js";
 import type { IdentityService } from "./identity-service.js";
 import { openOAuthAttempt, sealOAuthAttempt } from "./oauth-cookie.js";
@@ -12,12 +15,13 @@ import {
 } from "./session-service.js";
 
 const OAUTH_ATTEMPT_LIFETIME_MS = 5 * 60 * 1_000;
-const MAX_CONSUMED_ATTEMPTS = 1_024;
+const EXPIRED_ATTEMPT_CLEANUP_LIMIT = 128;
 
 export interface OAuthService {
-  start(returnTo: string): { authorizationUrl: URL; attemptCookie: string } | null;
+  start(returnTo: string): Promise<{ authorizationUrl: URL; attemptCookie: string } | null>;
+  consume(attemptCookie: string): Promise<OAuthAttempt | null>;
   complete(input: {
-    attemptCookie: string;
+    attempt: OAuthAttempt;
     code: string;
     state: string;
     currentSession: AuthenticatedWebSession | null;
@@ -25,12 +29,20 @@ export interface OAuthService {
 }
 
 interface OAuthServiceDependencies {
+  db: AgentMeshDatabase;
   oauthClient: GitHubOAuthClient;
   identityService: IdentityService;
   sessionService: WebSessionService;
   auditService: AuditService;
   oauthCookieKey: Buffer;
   clock?: () => Date;
+}
+
+interface OAuthAttempt {
+  state: string;
+  verifier: string;
+  expiresAt: number;
+  returnTo?: string;
 }
 
 function validDate(value: Date): boolean {
@@ -45,7 +57,6 @@ function sameState(actual: string, expected: string): boolean {
 
 export function createOAuthService(dependencies: OAuthServiceDependencies): OAuthService {
   const clock = dependencies.clock ?? (() => new Date());
-  const consumedAttempts = new Map<string, number>();
 
   async function failed(): Promise<null> {
     await dependencies.auditService.recordBestEffort({
@@ -56,24 +67,11 @@ export function createOAuthService(dependencies: OAuthServiceDependencies): OAut
     return null;
   }
 
-  function consumeAttempt(cookie: string, expiresAt: number, now: Date): boolean {
-    const nowMilliseconds = now.getTime();
-    if (!Number.isFinite(nowMilliseconds)) return false;
-    for (const [fingerprint, expiry] of consumedAttempts) {
-      if (expiry <= nowMilliseconds) consumedAttempts.delete(fingerprint);
-    }
-    const fingerprint = createHmac("sha256", dependencies.oauthCookieKey).update(cookie, "utf8").digest("base64url");
-    if (consumedAttempts.has(fingerprint)) return false;
-    consumedAttempts.set(fingerprint, expiresAt);
-    while (consumedAttempts.size > MAX_CONSUMED_ATTEMPTS) {
-      const oldest = consumedAttempts.keys().next().value;
-      if (oldest === undefined) break;
-      consumedAttempts.delete(oldest);
-    }
-    return true;
+  function attemptDigest(cookie: string): Buffer {
+    return createHmac("sha256", dependencies.oauthCookieKey).update(cookie, "utf8").digest();
   }
 
-  function start(returnTo: string): { authorizationUrl: URL; attemptCookie: string } | null {
+  async function start(returnTo: string): Promise<{ authorizationUrl: URL; attemptCookie: string } | null> {
     const now = clock();
     if (!validDate(now)) return null;
     const expiresAt = now.getTime() + OAUTH_ATTEMPT_LIFETIME_MS;
@@ -81,14 +79,58 @@ export function createOAuthService(dependencies: OAuthServiceDependencies): OAut
     const state = randomBytes(32).toString("base64url");
     const verifier = randomBytes(32).toString("base64url");
     const challenge = createHash("sha256").update(verifier, "utf8").digest("base64url");
-    return {
-      authorizationUrl: dependencies.oauthClient.authorizationUrl(state, challenge),
-      attemptCookie: sealOAuthAttempt({ state, verifier, expiresAt, returnTo }, dependencies.oauthCookieKey),
-    };
+    const attemptCookie = sealOAuthAttempt({ state, verifier, expiresAt, returnTo }, dependencies.oauthCookieKey);
+    try {
+      await dependencies.db.transaction(async (transaction) => {
+        await transaction.execute(sql`
+          WITH expired AS (
+            SELECT ctid
+            FROM ${oauthAttempts}
+            WHERE ${oauthAttempts.expiresAt} <= ${now}
+            ORDER BY ${oauthAttempts.expiresAt} ASC
+            LIMIT ${EXPIRED_ATTEMPT_CLEANUP_LIMIT}
+          )
+          DELETE FROM ${oauthAttempts}
+          WHERE ctid IN (SELECT ctid FROM expired)
+        `);
+        await transaction.insert(oauthAttempts).values({
+          attemptDigest: attemptDigest(attemptCookie),
+          expiresAt: new Date(expiresAt),
+          createdAt: now,
+        });
+      });
+    } catch {
+      return null;
+    }
+    return { authorizationUrl: dependencies.oauthClient.authorizationUrl(state, challenge), attemptCookie };
+  }
+
+  async function consume(attemptCookie: string): Promise<OAuthAttempt | null> {
+    const now = clock();
+    if (!validDate(now)) return null;
+    try {
+      const marked = await dependencies.db.transaction(async (transaction) => {
+        const rows = await transaction
+          .update(oauthAttempts)
+          .set({ consumedAt: now })
+          .where(and(
+            eq(oauthAttempts.attemptDigest, attemptDigest(attemptCookie)),
+            gt(oauthAttempts.expiresAt, now),
+            isNull(oauthAttempts.consumedAt),
+          ))
+          .returning({ expiresAt: oauthAttempts.expiresAt });
+        return rows[0] ?? null;
+      });
+      if (marked === null) return null;
+      const attempt = openOAuthAttempt(attemptCookie, dependencies.oauthCookieKey, now);
+      return attempt.expiresAt === marked.expiresAt.getTime() ? attempt : null;
+    } catch {
+      return null;
+    }
   }
 
   async function complete(input: {
-    attemptCookie: string;
+    attempt: OAuthAttempt;
     code: string;
     state: string;
     currentSession: AuthenticatedWebSession | null;
@@ -96,12 +138,9 @@ export function createOAuthService(dependencies: OAuthServiceDependencies): OAut
     let accessToken: string | null = null;
     try {
       if (!isCanonicalWebCredential(input.state)) return failed();
-      const now = clock();
-      const attempt = openOAuthAttempt(input.attemptCookie, dependencies.oauthCookieKey, now);
-      if (!consumeAttempt(input.attemptCookie, attempt.expiresAt, now)) return failed();
-      if (!sameState(input.state, attempt.state)) return failed();
+      if (!sameState(input.state, input.attempt.state)) return failed();
 
-      accessToken = await dependencies.oauthClient.exchangeCode(input.code, attempt.verifier);
+      accessToken = await dependencies.oauthClient.exchangeCode(input.code, input.attempt.verifier);
       const profile = await dependencies.oauthClient.fetchProfile(accessToken);
       if (input.currentSession !== null && input.currentSession.githubUserId !== profile.id) {
         return failed();
@@ -115,7 +154,7 @@ export function createOAuthService(dependencies: OAuthServiceDependencies): OAut
           identity.userId,
         );
       if (session === null) return failed();
-      return { session, returnTo: attempt.returnTo ?? "/app" };
+      return { session, returnTo: input.attempt.returnTo ?? "/app" };
     } catch {
       return failed();
     } finally {
@@ -123,5 +162,5 @@ export function createOAuthService(dependencies: OAuthServiceDependencies): OAut
     }
   }
 
-  return { start, complete };
+  return { start, consume, complete };
 }

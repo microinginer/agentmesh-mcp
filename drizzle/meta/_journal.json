@@ -29,6 +29,20 @@
       "when": 1788133955421,
       "tag": "0003_hosted_control_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788140397538,
+      "tag": "0004_oauth_attempts",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788140555724,
+      "tag": "0005_oauth_attempt_digest_length",
+      "breakpoints": true
     }
   ]
 }
