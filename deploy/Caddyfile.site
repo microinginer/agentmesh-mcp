@@ -13,6 +13,9 @@ agentmesh.uzmedical.org {
 		X-Frame-Options "DENY"
 	}
 
+	@oauth_callback path /auth/github/callback
+	skip_log @oauth_callback
+
 	reverse_proxy 127.0.0.1:3100 {
 		transport http {
 			dial_timeout 3s

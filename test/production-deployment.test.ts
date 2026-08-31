@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -56,5 +57,11 @@ describe("production deployment topology", () => {
     );
     expect(compose.networks.backend?.internal).toBe(true);
     expect(compose.networks.observer?.internal).not.toBe(true);
+  });
+
+  it("excludes OAuth callback credentials from access logs", () => {
+    const caddyfile = readFileSync("deploy/Caddyfile.site", "utf8");
+    expect(caddyfile).toContain("@oauth_callback path /auth/github/callback");
+    expect(caddyfile).toContain("skip_log @oauth_callback");
   });
 });
