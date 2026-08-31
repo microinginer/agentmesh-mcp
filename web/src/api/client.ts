@@ -25,7 +25,16 @@ export class ApiError extends Error {
 }
 
 function ensureApiPath(path: string): void {
-  if (!path.startsWith("/api/v1/") || path.startsWith("//") || path.includes("\\")) {
+  const rawPath = path.split("?", 1)[0] ?? "";
+  const hasTraversalSegment = rawPath.split("/").some((segment) => segment === "." || segment === "..");
+  if (
+    !path.startsWith("/api/v1/")
+    || path.startsWith("//")
+    || path.includes("\\")
+    || path.includes("#")
+    || hasTraversalSegment
+    || /%(?:2e|2f|5c)/i.test(rawPath)
+  ) {
     throw new ApiError(0, "INVALID_PATH", "Invalid API path");
   }
 }

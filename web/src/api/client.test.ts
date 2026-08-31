@@ -54,6 +54,14 @@ describe("same-origin AgentMesh API client", () => {
     await expect(client.query(`https://evil.example/api?secret=${secret}`)).rejects.toMatchObject({
       code: "INVALID_PATH",
     });
+    for (const path of [
+      "//evil.example/api/v1/projects",
+      "/api/v1/../auth/github/start",
+      "/api/v1/%2e%2e/auth/github/start",
+      "/api/v1/projects%2f..%2fauth",
+    ]) {
+      await expect(client.query(path)).rejects.toMatchObject({ code: "INVALID_PATH" });
+    }
     await expect(client.query("/api/v1/projects")).rejects.toSatisfy((error: unknown) => {
       expect(error).toBeInstanceOf(ApiError);
       expect(String(error)).not.toContain(secret);

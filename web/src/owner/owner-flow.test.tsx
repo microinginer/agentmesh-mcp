@@ -141,6 +141,22 @@ describe("AgentMesh owner vertical slice", () => {
     expect(screen.getByRole("button", { name: "Create project" })).toBeDisabled();
   });
 
+  it("keeps self-hosted project limit zero unlimited", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const path = pathOf(input);
+      if (path === "/api/v1/session") return json(sessionPayload);
+      if (path === "/api/v1/projects?limit=50") {
+        return json({ projects: [project], active_count: 101, project_limit: 0 });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    render(<TestApp initialEntries={["/app"]} />);
+    expect(await screen.findByText("101 active projects · Unlimited")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create project" })).toBeEnabled();
+  });
+
   it("starts independent overview reads together and renders live summary, agents, events, and connections", async () => {
     const requested: string[] = [];
     const resolvers = new Map<string, (response: Response) => void>();

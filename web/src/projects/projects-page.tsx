@@ -43,7 +43,11 @@ export function ProjectsPage() {
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (submitting.current || data === null || data.active_count >= data.project_limit) return;
+    if (
+      submitting.current
+      || data === null
+      || (data.project_limit !== 0 && data.active_count >= data.project_limit)
+    ) return;
     const form = new FormData(event.currentTarget);
     const name = String(form.get("name") ?? "").trim();
     const description = String(form.get("description") ?? "").trim();
@@ -95,7 +99,7 @@ export function ProjectsPage() {
     );
   }
 
-  const atLimit = data.active_count >= data.project_limit;
+  const atLimit = data.project_limit !== 0 && data.active_count >= data.project_limit;
   const isFirstProject = data.projects.length === 0;
   return (
     <ProjectShell>
@@ -142,7 +146,9 @@ export function ProjectsPage() {
           <Button type="submit" size="lg" disabled={pending || atLimit}>
             {pending ? "Creating project…" : "Create project"}
           </Button>
-          <p className="project-limit">{data.active_count} of {data.project_limit} active projects</p>
+          <p className="project-limit">{data.project_limit === 0
+            ? `${data.active_count} active projects · Unlimited`
+            : `${data.active_count} of ${data.project_limit} active projects`}</p>
         </form>
       </section>
     </ProjectShell>

@@ -37,7 +37,7 @@ export const projectSchema = z.object({
 export const projectListResponseSchema = z.object({
   projects: z.array(projectSchema).max(100),
   active_count: z.number().int().nonnegative(),
-  project_limit: z.number().int().positive(),
+  project_limit: z.number().int().nonnegative(),
 }).strict();
 
 export const projectResponseSchema = z.object({ project: projectSchema }).strict();
