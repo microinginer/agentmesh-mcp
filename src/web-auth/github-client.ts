@@ -90,10 +90,12 @@ function endpointUrl(value: string | URL): URL {
   return new URL(value);
 }
 
-function safeFetch(fetchImpl: FetchLike, input: string | URL, init: RequestInit, code: GitHubOAuthErrorCode): Promise<Response> {
-  return fetchImpl(input, init).catch(() => {
+async function safeFetch(fetchImpl: FetchLike, input: string | URL, init: RequestInit, code: GitHubOAuthErrorCode): Promise<Response> {
+  try {
+    return await fetchImpl(input, init);
+  } catch {
     throw new GitHubOAuthError(code);
-  });
+  }
 }
 
 export function createGitHubClient(input: CreateGitHubClientInput): GitHubOAuthClient {
@@ -107,6 +109,7 @@ export function createGitHubClient(input: CreateGitHubClientInput): GitHubOAuthC
   return {
     authorizationUrl(state: string, challenge: string): URL {
       const url = new URL(endpoints.authorization);
+      url.searchParams.delete("scope");
       url.searchParams.set("client_id", input.clientId);
       url.searchParams.set("redirect_uri", input.callbackUrl.toString());
       url.searchParams.set("state", state);

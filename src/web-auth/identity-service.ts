@@ -20,10 +20,35 @@ function displayName(profile: GitHubProfile): string {
   return profile.name ?? profile.login;
 }
 
+type SnapshotExecutor = Pick<AgentMeshDatabase, "update">;
+
 export function createIdentityService(dependencies: IdentityServiceDependencies) {
   const { db } = dependencies;
   const clock = dependencies.clock ?? (() => new Date());
   const audit = createAuditService({ db, clock });
+
+  async function applyProfileSnapshots(
+    executor: SnapshotExecutor,
+    userId: string,
+    profile: GitHubProfile,
+    now: Date,
+  ): Promise<void> {
+    await executor
+      .update(users)
+      .set({
+        displayName: displayName(profile),
+        avatarUrl: profile.avatarUrl,
+        updatedAt: now,
+      })
+      .where(eq(users.id, userId));
+    await executor
+      .update(oauthIdentities)
+      .set({ login: profile.login, updatedAt: now, lastLoginAt: now })
+      .where(and(
+        eq(oauthIdentities.provider, GITHUB_PROVIDER),
+        eq(oauthIdentities.providerUserId, profile.id),
+      ));
+  }
 
   async function upsertGitHub(profile: GitHubProfile): Promise<GitHubIdentity> {
     const now = clock();
@@ -48,21 +73,6 @@ export function createIdentityService(dependencies: IdentityServiceDependencies)
         let userId: string;
         if (existing !== undefined) {
           userId = existing.userId;
-          await transaction
-            .update(users)
-            .set({
-              displayName: displayName(profile),
-              avatarUrl: profile.avatarUrl,
-              updatedAt: now,
-            })
-            .where(eq(users.id, userId));
-          await transaction
-            .update(oauthIdentities)
-            .set({ login: profile.login, updatedAt: now, lastLoginAt: now })
-            .where(and(
-              eq(oauthIdentities.provider, GITHUB_PROVIDER),
-              eq(oauthIdentities.providerUserId, profile.id),
-            ));
         } else {
           const [createdUser] = await transaction
             .insert(users)
@@ -111,6 +121,8 @@ export function createIdentityService(dependencies: IdentityServiceDependencies)
             userId = conflictingIdentity.userId;
           }
         }
+
+        await applyProfileSnapshots(transaction, userId, profile, now);
 
         await audit.record({
           userId,

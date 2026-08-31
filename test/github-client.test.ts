@@ -33,6 +33,22 @@ describe("GitHub OAuth client", () => {
     expect(url.searchParams.get("scope")).toBeNull();
   });
 
+  it("removes scope from an overridden authorization endpoint without discarding unrelated parameters", () => {
+    const client = createGitHubClient({
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      callbackUrl,
+      endpoints: {
+        authorization: "https://github.example.test/login/oauth/authorize?login=octocat&scope=repo",
+      },
+    });
+
+    const url = client.authorizationUrl("state-value", "pkce-challenge");
+
+    expect(url.searchParams.get("login")).toBe("octocat");
+    expect(url.searchParams.get("scope")).toBeNull();
+  });
+
   it("exchanges a code using the configured callback and PKCE verifier", async () => {
     const requests: Request[] = [];
     const client = createGitHubClient({
@@ -168,6 +184,50 @@ describe("GitHub OAuth client", () => {
       clientSecret: "client-secret",
       callbackUrl,
       fetchImpl: async () => new Response(fakeProviderBody, { status: 502 }),
+    });
+
+    const error = await client.fetchProfile(fakeAccessToken).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GitHubOAuthError);
+    expect(error).toMatchObject({ code: "GITHUB_PROFILE_REQUEST_FAILED" });
+    expect(JSON.stringify(error)).not.toContain(fakeAccessToken);
+    expect(JSON.stringify(error)).not.toContain(fakeProviderBody);
+    expect(String(error)).not.toContain(fakeAccessToken);
+    expect(String(error)).not.toContain(fakeProviderBody);
+  });
+
+  it("maps synchronous exchange transport failures to a safe typed error", async () => {
+    const fakeCode = "oauth-code-that-must-not-leak";
+    const fakeVerifier = "pkce-verifier-that-must-not-leak";
+    const client = createGitHubClient({
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      callbackUrl,
+      fetchImpl: () => {
+        throw new Error(`${fakeCode}:${fakeVerifier}:${fakeProviderBody}`);
+      },
+    });
+
+    const error = await client.exchangeCode(fakeCode, fakeVerifier).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GitHubOAuthError);
+    expect(error).toMatchObject({ code: "GITHUB_OAUTH_EXCHANGE_FAILED" });
+    expect(JSON.stringify(error)).not.toContain(fakeCode);
+    expect(JSON.stringify(error)).not.toContain(fakeVerifier);
+    expect(JSON.stringify(error)).not.toContain(fakeProviderBody);
+    expect(String(error)).not.toContain(fakeCode);
+    expect(String(error)).not.toContain(fakeVerifier);
+    expect(String(error)).not.toContain(fakeProviderBody);
+  });
+
+  it("maps synchronous profile transport failures to a safe typed error", async () => {
+    const client = createGitHubClient({
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      callbackUrl,
+      fetchImpl: () => {
+        throw new Error(`${fakeAccessToken}:${fakeProviderBody}`);
+      },
     });
 
     const error = await client.fetchProfile(fakeAccessToken).catch((caught: unknown) => caught);
