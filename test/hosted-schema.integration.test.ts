@@ -6,13 +6,16 @@ import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import {
   auditEvents,
+  agents,
   oauthIdentities,
+  projectTokens,
   projects,
   users,
   webSessions,
 } from "../src/db/schema.js";
 import { createAuditService } from "../src/audit/service.js";
 import { resetDatabase } from "./support/database.js";
+import { createLegacyMigrationFixture } from "./support/legacy-migrations.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
@@ -50,12 +53,62 @@ describe("hosted control-plane schema", () => {
       providerUserId: "1",
       login: "octocat",
     });
+    const [otherUser] = await database.db.insert(users).values({
+      displayName: "Hubot",
+    }).returning();
     await expect(database.db.insert(oauthIdentities).values({
-      userId: randomUUID(),
+      userId: otherUser!.id,
       provider: "github",
       providerUserId: "1",
       login: "duplicate",
-    })).rejects.toThrow();
+    })).rejects.toMatchObject({
+      cause: {
+        code: "23505",
+        constraint: "oauth_identities_provider_user_unique",
+      },
+    });
+  });
+
+  it("backfills legacy connection labels while preserving owner and agent provenance nulls", async () => {
+    const fixture = await createLegacyMigrationFixture(databaseUrl);
+    const projectId = randomUUID();
+    const tokenId = randomUUID();
+    const agentId = randomUUID();
+
+    try {
+      await fixture.database.pool.query(
+        "INSERT INTO projects (id, name) VALUES ($1, $2)",
+        [projectId, "legacy"],
+      );
+      await fixture.database.pool.query(
+        "INSERT INTO project_tokens (id, project_id, token_digest) VALUES ($1, $2, $3)",
+        [tokenId, projectId, Buffer.alloc(32, 1)],
+      );
+      await fixture.database.pool.query(
+        `INSERT INTO agents (
+           id, project_id, registration_digest, name, client, capabilities
+         ) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [agentId, projectId, Buffer.alloc(32, 2), "legacy-agent", "codex", []],
+      );
+
+      await fixture.migrateHosted();
+
+      const [project] = await fixture.database.db.select().from(projects);
+      const [token] = await fixture.database.db.select().from(projectTokens);
+      const [agent] = await fixture.database.db.select().from(agents);
+      expect(project?.ownerUserId).toBeNull();
+      expect(token).toMatchObject({
+        id: tokenId,
+        label: "Legacy CLI token",
+        createdByUserId: null,
+      });
+      expect(agent).toMatchObject({
+        id: agentId,
+        registeredViaTokenId: null,
+      });
+    } finally {
+      await fixture.destroy();
+    }
   });
 
   it("stores only session digests in a durable session row", async () => {
