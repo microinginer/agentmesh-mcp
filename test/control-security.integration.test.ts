@@ -284,10 +284,11 @@ describe("hosted release security controls", () => {
     const logged: unknown[] = [];
     const clientIps = ["198.51.100.21", "198.51.100.22"];
     const socketIp = "127.0.0.1";
+    const intermediateProxyIp = "10.42.0.8";
     const fixture = await buildFixture({
       store: CapturingStore,
       limits: { ...testLimits, oauthStart: 1 },
-      trustedProxies: [socketIp],
+      trustedProxies: [socketIp, "10.42.0.0/24"],
       logger: { write: (event: never) => logged.push(event) },
       config: webConfig({
         callbackUrl: new URL("https://agentmesh.example/auth/github/callback"),
@@ -302,7 +303,7 @@ describe("hosted release security controls", () => {
           method: "GET",
           url: "/auth/github/start",
           remoteAddress: socketIp,
-          headers: { "x-forwarded-for": clientIp },
+          headers: { "x-forwarded-for": `${clientIp}, ${intermediateProxyIp}` },
         }));
       }
       expect(responses.map((response) => response.statusCode)).toEqual([302, 302]);
@@ -313,21 +314,32 @@ describe("hosted release security controls", () => {
         logs: logged,
         responses: responses.map((response) => ({ headers: response.headers, body: response.body })),
       });
-      for (const rawIp of [...clientIps, socketIp]) expect(rendered).not.toContain(rawIp);
+      for (const rawIp of [...clientIps, socketIp, intermediateProxyIp]) expect(rendered).not.toContain(rawIp);
       for (const key of CapturingStore.keys) expect(key).toMatch(/^oauth-start:[a-f0-9]{64}$/);
     } finally {
       await fixture.app.close();
     }
   });
 
-  it("ignores spoofed forwarding headers from an untrusted direct source", async () => {
+  it.each([
+    "127.0.0.1",
+    "10.42.0.0/24",
+    "2001:db8:42::2",
+    "2001:db8:42::/64",
+    "::ffff:192.0.2.0/120",
+  ])("ignores spoofed forwarding headers from an untrusted direct IPv4 source with accepted proxy setting %s", async (trustedProxy) => {
     const logged: unknown[] = [];
     const socketIp = "203.0.113.90";
     const forwardedIps = ["198.51.100.31", "198.51.100.32", "198.51.100.33"];
+    const accepted = loadConfig({
+      DATABASE_URL: databaseUrl,
+      AGENT_SESSION_SIGNING_KEY: Buffer.alloc(32, 7).toString("base64url"),
+      AGENTMESH_TRUSTED_PROXIES: trustedProxy,
+    });
     const fixture = await buildFixture({
       store: CapturingStore,
       limits: { ...testLimits, oauthStart: 2 },
-      trustedProxies: ["127.0.0.1"],
+      trustedProxies: accepted.trustedProxies,
       logger: { write: (event: never) => logged.push(event) },
     });
     try {

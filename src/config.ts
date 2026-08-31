@@ -1,6 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { isIP } from "node:net";
 
+import proxyAddr from "@fastify/proxy-addr";
 import { z } from "zod";
 
 const environmentSchema = z.object({
@@ -182,9 +183,17 @@ function parseTrustedProxies(value: string | undefined): string[] {
     if (separator !== -1) {
       const prefix = entry.slice(separator + 1);
       const maximum = version === 4 ? 32 : 128;
-      if (!/^\d+$/.test(prefix) || Number(prefix) < 1 || Number(prefix) > maximum) {
+      if (!/^[1-9]\d*$/.test(prefix) || Number(prefix) > maximum) {
         throw new Error("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
       }
+    }
+    try {
+      const trust = proxyAddr.compile([entry]);
+      if (trust("0.0.0.0", 0) && trust("255.255.255.255", 0)) {
+        throw new Error("semantically global IPv4 trust");
+      }
+    } catch {
+      throw new Error("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
     }
   }
   return [...new Set(entries)];

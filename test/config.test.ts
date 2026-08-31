@@ -89,14 +89,20 @@ describe("runtime configuration", () => {
       HOST: "0.0.0.0",
       PORT: "8080",
       ALLOWED_HOSTS: "agentmesh.example.com",
-      AGENTMESH_TRUSTED_PROXIES: "172.30.0.2,10.42.0.0/24,2001:db8::1/128",
+      AGENTMESH_TRUSTED_PROXIES: "172.30.0.2,10.42.0.0/24,2001:db8:42::2,2001:db8:42::/64,::ffff:192.0.2.0/120",
     });
 
     expect(config).toMatchObject({
       host: "0.0.0.0",
       port: 8080,
       allowedHosts: ["agentmesh.example.com", "127.0.0.1", "localhost", "[::1]"],
-      trustedProxies: ["172.30.0.2", "10.42.0.0/24", "2001:db8::1/128"],
+      trustedProxies: [
+        "172.30.0.2",
+        "10.42.0.0/24",
+        "2001:db8:42::2",
+        "2001:db8:42::/64",
+        "::ffff:192.0.2.0/120",
+      ],
     });
   });
 
@@ -104,8 +110,15 @@ describe("runtime configuration", () => {
     "loopback",
     "0.0.0.0/0",
     "::/0",
+    "::/1",
+    "::/80",
+    "::ffff:0:0/95",
+    "::ffff:0:0/96",
     "172.30.0.2/33",
     "2001:db8::1/129",
+    "10.42.0.0/08",
+    "172.30.0.0/024",
+    "2001:db8::/064",
     "172.30.0.2,,172.30.0.3",
     "not-an-address",
   ])("fails closed for unsafe trusted proxy entry %s", (trustedProxies) => {
