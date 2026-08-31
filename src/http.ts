@@ -1,5 +1,6 @@
 import type { IncomingMessage } from "node:http";
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import fastifyCookie from "@fastify/cookie";
@@ -15,7 +16,7 @@ import { validateHostHeader, validateOriginHeader } from "@modelcontextprotocol/
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { sql } from "drizzle-orm";
 import Fastify from "fastify";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 
 import { registerControlRoutes } from "./control/routes.js";
 import { registerOperatorRoutes } from "./control/operator-routes.js";
@@ -176,16 +177,74 @@ function isHashedWebAsset(pathName: string): boolean {
   const normalized = pathName.startsWith("/") ? pathName.slice(1) : pathName;
   return !normalized.includes("/")
     && !normalized.endsWith(".map")
-    && /^[^.][^/]*-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/.test(normalized);
+    && /^[A-Za-z0-9][A-Za-z0-9_.-]*-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/.test(normalized);
+}
+
+function webAssetNameFromUrl(url: string): string | null {
+  const path = url.split("?", 1)[0] ?? "";
+  if (!path.startsWith("/assets/")) return null;
+  const name = path.slice("/assets/".length);
+  if (name.includes("%") || name.includes("\\") || !isHashedWebAsset(name)) return null;
+  return name;
+}
+
+function referencedWebAssetNames(indexBytes: Buffer): string[] | null {
+  let html: string;
+  try {
+    html = new TextDecoder("utf-8", { fatal: true }).decode(indexBytes);
+  } catch {
+    return null;
+  }
+  if (!/^\s*<!doctype html>/i.test(html) || !/<[a-z][^>]*\bid=["']root["'][^>]*>/i.test(html)) {
+    return null;
+  }
+
+  const names = new Set<string>();
+  const referencePattern = /(?:src|href)\s*=\s*["'](\/assets\/[^"'?#]+)["']/gi;
+  for (const match of html.matchAll(referencePattern)) {
+    const reference = match[1];
+    if (reference === undefined) return null;
+    const name = webAssetNameFromUrl(reference);
+    if (name === null) return null;
+    names.add(name);
+  }
+  const references = [...names];
+  return references.some((name) => name.endsWith(".js")) ? references : null;
 }
 
 function webBuildAvailable(webAssetsPath: string): boolean {
   try {
-    return statSync(join(webAssetsPath, "index.html")).isFile()
-      && statSync(join(webAssetsPath, "assets")).isDirectory();
+    const indexPath = join(webAssetsPath, "index.html");
+    const assetsPath = join(webAssetsPath, "assets");
+    if (!statSync(indexPath).isFile() || !statSync(assetsPath).isDirectory()) return false;
+    const references = referencedWebAssetNames(readFileSync(indexPath));
+    if (references === null) return false;
+    return references.every((name) => readFileSync(join(assetsPath, name)).byteLength > 0);
   } catch {
     return false;
   }
+}
+
+async function readValidatedWebIndex(webAssetsPath: string): Promise<Buffer | null> {
+  try {
+    const indexBytes = await readFile(join(webAssetsPath, "index.html"));
+    const references = referencedWebAssetNames(indexBytes);
+    if (references === null) return null;
+    const assets = await Promise.all(
+      references.map((name) => readFile(join(webAssetsPath, "assets", name))),
+    );
+    return assets.every((asset) => asset.byteLength > 0) ? indexBytes : null;
+  } catch {
+    return null;
+  }
+}
+
+function sendWebUnavailable(reply: FastifyReply): FastifyReply {
+  applySecurityHeaders(reply);
+  reply.type("application/json; charset=utf-8").code(503);
+  return reply.request.method === "HEAD"
+    ? reply.send()
+    : reply.send({ error: "web_assets_unavailable" });
 }
 
 function registerWebProductRoutes(app: FastifyInstance, webAssetsPath: string): void {
@@ -193,40 +252,45 @@ function registerWebProductRoutes(app: FastifyInstance, webAssetsPath: string): 
 
   if (!webBuildAvailable(webAssetsPath)) {
     for (const path of spaPaths) {
-      app.get(path, (_request, reply) => reply.code(503).send({ error: "web_assets_unavailable" }));
+      app.get(path, (_request, reply) => sendWebUnavailable(reply));
     }
     return;
   }
 
-  app.register(fastifyStatic, {
-    root: webAssetsPath,
-    serve: false,
-  });
-  app.register(fastifyStatic, {
-    root: join(webAssetsPath, "assets"),
-    prefix: "/assets/",
-    decorateReply: false,
-    index: false,
-    dotfiles: "ignore",
-    cacheControl: false,
-    allowedPath: (pathName) => isHashedWebAsset(pathName),
-    setHeaders: (reply) => {
-      applyWebSecurityHeaders(reply);
-      reply.header("Cache-Control", "public, max-age=31536000, immutable");
-    },
+  app.register(async (assetsApp) => {
+    assetsApp.setErrorHandler((_error, _request, reply) => sendWebUnavailable(reply));
+    assetsApp.addHook("preHandler", async (request, reply) => {
+      const name = webAssetNameFromUrl(request.raw.url ?? "");
+      if (name === null) return reply.callNotFound();
+      try {
+        const asset = await readFile(join(webAssetsPath, "assets", name));
+        if (asset.byteLength === 0) return sendWebUnavailable(reply);
+      } catch {
+        return sendWebUnavailable(reply);
+      }
+    });
+    await assetsApp.register(fastifyStatic, {
+      root: join(webAssetsPath, "assets"),
+      prefix: "/assets/",
+      index: false,
+      dotfiles: "ignore",
+      cacheControl: false,
+      allowedPath: (pathName) => isHashedWebAsset(pathName),
+      setHeaders: (reply) => {
+        applyWebSecurityHeaders(reply);
+        reply.header("Cache-Control", "public, max-age=31536000, immutable");
+      },
+    });
   });
 
   for (const path of spaPaths) {
-    app.get(path, (request, reply) => {
+    app.get(path, async (request, reply) => {
       if (!isSafeSpaPath(request.raw.url)) return reply.callNotFound();
+      const indexBytes = await readValidatedWebIndex(webAssetsPath);
+      if (indexBytes === null) return sendWebUnavailable(reply);
       applyWebSecurityHeaders(reply);
       reply.header("Cache-Control", "no-cache");
-      return reply.sendFile("index.html", webAssetsPath, {
-        cacheControl: false,
-        dotfiles: "ignore",
-        immutable: false,
-        maxAge: 0,
-      });
+      return reply.type("text/html; charset=utf-8").send(indexBytes);
     });
   }
 }

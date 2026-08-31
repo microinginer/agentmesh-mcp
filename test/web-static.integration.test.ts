@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,8 @@ import type { AgentMeshDatabase } from "../src/db/client.js";
 import { buildHttpApp } from "../src/http.js";
 
 const signingKey = Buffer.from("agentmesh-test-signing-key-32-bytes!", "utf8");
-const indexHtml = "<!doctype html><html><body><div id=\"root\">AgentMesh web shell</div></body></html>";
+const indexHtml = "<!doctype html><html><body><div id=\"root\">AgentMesh web shell</div>"
+  + "<script type=\"module\" src=\"/assets/app-a1b2c3d4.js\"></script></body></html>";
 
 let webAssetsPath: string;
 
@@ -99,6 +100,23 @@ describe("AgentMesh web static boundary", () => {
     }
   });
 
+  it("keeps successful HTML and hashed-asset HEAD responses bodyless", async () => {
+    const app = buildApp();
+    try {
+      const html = await app.inject({ method: "HEAD", url: "/app/projects/example" });
+      const asset = await app.inject({ method: "HEAD", url: "/assets/app-a1b2c3d4.js" });
+
+      expect(html.statusCode).toBe(200);
+      expect(html.headers["cache-control"]).toBe("no-cache");
+      expect(html.body).toBe("");
+      expect(asset.statusCode).toBe(200);
+      expect(asset.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+      expect(asset.body).toBe("");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("applies the product CSP without weakening transport headers", async () => {
     const app = buildApp();
     try {
@@ -160,6 +178,92 @@ describe("AgentMesh web static boundary", () => {
 
       expect(html.statusCode).toBe(503);
       expect(html.json()).toEqual({ error: "web_assets_unavailable" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("fails closed without filesystem disclosure when index HTML becomes corrupt", async () => {
+    const app = buildApp();
+    await app.ready();
+    await writeFile(join(webAssetsPath, "index.html"), "not an AgentMesh document", "utf8");
+    try {
+      const responses = await Promise.all([
+        app.inject({ method: "GET", url: "/" }),
+        app.inject({ method: "GET", url: "/app/projects/example" }),
+        app.inject({ method: "HEAD", url: "/app/projects/example" }),
+      ]);
+
+      for (const response of responses) {
+        expect(response.statusCode).toBe(503);
+        expect(response.headers["cache-control"]).toBe("no-store");
+        expect(response.body).not.toContain(webAssetsPath);
+        expect(response.body).not.toContain("index.html");
+      }
+      expect(responses[0]?.json()).toEqual({ error: "web_assets_unavailable" });
+      expect(responses[1]?.json()).toEqual({ error: "web_assets_unavailable" });
+      expect(responses[2]?.body).toBe("");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("fails closed without filesystem disclosure when index HTML becomes unreadable", async () => {
+    const indexPath = join(webAssetsPath, "index.html");
+    const app = buildApp();
+    await app.ready();
+    await chmod(indexPath, 0o000);
+    try {
+      const response = await app.inject({ method: "GET", url: "/" });
+
+      expect(response.statusCode).toBe(503);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.json()).toEqual({ error: "web_assets_unavailable" });
+      expect(response.body).not.toContain(webAssetsPath);
+      expect(response.body).not.toContain("index.html");
+    } finally {
+      await chmod(indexPath, 0o600);
+      await app.close();
+    }
+  });
+
+  it("redacts unreadable hashed-asset failures and removes immutable caching", async () => {
+    const assetPath = join(webAssetsPath, "assets", "app-a1b2c3d4.js");
+    const app = buildApp();
+    await app.ready();
+    await chmod(assetPath, 0o000);
+    try {
+      const responses = await Promise.all([
+        app.inject({ method: "GET", url: "/assets/app-a1b2c3d4.js" }),
+        app.inject({ method: "HEAD", url: "/assets/app-a1b2c3d4.js" }),
+      ]);
+
+      for (const response of responses) {
+        expect(response.statusCode).toBe(503);
+        expect(response.headers["cache-control"]).toBe("no-store");
+        expect(response.headers["cache-control"]).not.toContain("immutable");
+        expect(response.body).not.toContain(webAssetsPath);
+        expect(response.body).not.toContain("app-a1b2c3d4.js");
+      }
+      expect(responses[0]?.json()).toEqual({ error: "web_assets_unavailable" });
+      expect(responses[1]?.body).toBe("");
+    } finally {
+      await chmod(assetPath, 0o600);
+      await app.close();
+    }
+  });
+
+  it("treats an empty referenced asset build as unavailable", async () => {
+    await rm(join(webAssetsPath, "assets", "app-a1b2c3d4.js"));
+    const app = buildApp();
+    try {
+      const html = await app.inject({ method: "GET", url: "/" });
+      const api = await app.inject({ method: "GET", url: "/api/v1/not-real" });
+
+      expect(html.statusCode).toBe(503);
+      expect(html.headers["cache-control"]).toBe("no-store");
+      expect(html.json()).toEqual({ error: "web_assets_unavailable" });
+      expect(api.statusCode).toBe(404);
     } finally {
       await app.close();
     }
