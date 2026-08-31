@@ -81,17 +81,29 @@ interface RawHttpResponse {
   body: string;
 }
 
-async function rawHttpRequest(port: number, url: string, headers: string[]): Promise<RawHttpResponse> {
+interface RawByteHeader {
+  name: string;
+  value: Buffer;
+}
+
+type RawTestHeader = string | RawByteHeader;
+
+function rawHeaderLine(header: RawTestHeader): Buffer {
+  if (typeof header === "string") return Buffer.from(header, "latin1");
+  return Buffer.concat([
+    Buffer.from(`${header.name}:`, "latin1"),
+    header.value,
+  ]);
+}
+
+async function rawHttpRequest(port: number, url: string, headers: RawTestHeader[]): Promise<RawHttpResponse> {
   return new Promise((resolve, reject) => {
     const socket = connect({ host: "127.0.0.1", port }, () => {
-      socket.write([
-        `GET ${url} HTTP/1.1`,
-        "Host:127.0.0.1",
-        ...headers,
-        "Connection:close",
-        "",
-        "",
-      ].join("\r\n"));
+      socket.write(Buffer.concat([
+        Buffer.from(`GET ${url} HTTP/1.1\r\nHost:127.0.0.1\r\n`, "latin1"),
+        ...headers.flatMap((header) => [rawHeaderLine(header), Buffer.from("\r\n", "latin1")]),
+        Buffer.from("Connection:close\r\n\r\n", "latin1"),
+      ]));
     });
     socket.setTimeout(RAW_HTTP_TIMEOUT_MS, () => socket.destroy(new Error("raw HTTP response timed out")));
     const chunks: Buffer[] = [];
@@ -136,6 +148,17 @@ function trackedHeaderBytes(url: string, headers: string[]): number {
       if (separator <= 0) throw new Error("invalid raw test header");
       return total + Buffer.byteLength(header.slice(0, separator)) + Buffer.byteLength(header.slice(separator + 1));
     }, 0);
+}
+
+function trackedRawHeaderBytes(url: string, headers: RawByteHeader[]): number {
+  return Buffer.byteLength(url, "latin1") + Buffer.byteLength("Host127.0.0.1Connectionclose", "latin1")
+    + headers.reduce((total, header) => total + Buffer.byteLength(header.name, "latin1") + header.value.byteLength, 0);
+}
+
+function latin1CookieField(attemptCookie: string, length: number): Buffer {
+  const prefix = Buffer.from(`${attemptCookie}; pad=`, "latin1");
+  if (prefix.byteLength > length) throw new Error("OAuth cookie does not fit Latin-1 boundary fixture");
+  return Buffer.concat([prefix, Buffer.alloc(length - prefix.byteLength, 0xe9)]);
 }
 
 beforeAll(async () => {
@@ -1317,6 +1340,79 @@ describe("web OAuth HTTP routes", () => {
     }
   });
 
+  it("admits an unrelated 8,200-byte obs-text header without replaying a successful callback", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const target = await start(app);
+      const url = `/auth/github/callback?code=one-use&state=${target.state}`;
+      const headers: RawByteHeader[] = [
+        { name: "Cookie", value: Buffer.from(target.cookie, "latin1") },
+        { name: "X-Pad", value: Buffer.alloc(8_200, 0xe9) },
+      ];
+      expect(trackedRawHeaderBytes(url, headers)).toBeLessThan(MAX_HTTP_HEADER_SIZE);
+      const port = await listenLoopback(app);
+
+      const callback = await rawHttpRequest(port, url, headers);
+      const replay = await app.inject({ method: "GET", url, headers: { cookie: target.cookie } });
+
+      expect(callback).toMatchObject({ statusCode: 303, headers: { location: ["/app"] } });
+      expect(replay.headers.location).toBe("/?auth_error=github");
+      expect(github.exchanges).toHaveLength(1);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(1);
+      expect(await database.db.select({ id: oauthIdentities.id }).from(oauthIdentities)).toHaveLength(1);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents)).toEqual([
+        { eventType: "auth.login_succeeded" },
+        { eventType: "auth.login_failed" },
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("uses one raw Latin-1 byte per Cookie code unit at the 8,192/8,193 semantic boundary", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const acceptedAttempt = await start(app);
+      const rejectedAttempt = await start(app);
+      const acceptedUrl = `/auth/github/callback?code=one-use&state=${acceptedAttempt.state}`;
+      const rejectedUrl = `/auth/github/callback?code=one-use&state=${rejectedAttempt.state}`;
+      const acceptedCookie = latin1CookieField(acceptedAttempt.cookie, MAX_COOKIE_HEADER_LENGTH);
+      const rejectedCookie = latin1CookieField(rejectedAttempt.cookie, MAX_COOKIE_HEADER_LENGTH + 1);
+      expect(acceptedCookie.byteLength).toBe(8_192);
+      expect(rejectedCookie.byteLength).toBe(8_193);
+      const transaction = vi.spyOn(database.db, "transaction");
+      transaction.mockClear();
+      const port = await listenLoopback(app);
+
+      const accepted = await rawHttpRequest(port, acceptedUrl, [{ name: "Cookie", value: acceptedCookie }]);
+      const rejected = await rawHttpRequest(port, rejectedUrl, [{ name: "Cookie", value: rejectedCookie }]);
+      const replay = await app.inject({
+        method: "GET",
+        url: rejectedUrl,
+        headers: { cookie: rejectedAttempt.cookie },
+      });
+
+      expect(accepted).toMatchObject({ statusCode: 303, headers: { location: ["/app"] } });
+      expect(rejected).toMatchObject({ statusCode: 303, headers: { location: ["/?auth_error=github"] } });
+      expect(replay.headers.location).toBe("/?auth_error=github");
+      expect(transaction).toHaveBeenCalledTimes(5);
+      expect(github.exchanges).toHaveLength(1);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(1);
+      const attempts = await database.db.select({ consumedAt: oauthAttempts.consumedAt }).from(oauthAttempts);
+      expect(attempts).toHaveLength(2);
+      expect(attempts.every((attempt) => attempt.consumedAt !== null)).toBe(true);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents)).toEqual([
+        { eventType: "auth.login_succeeded" },
+        { eventType: "auth.login_failed" },
+        { eventType: "auth.login_failed" },
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("admits 16,383 tracked header bytes and rejects 16,384 before callback work", async () => {
     const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
     const { app } = buildWebApp({ github: github.client });
@@ -1370,6 +1466,116 @@ describe("web OAuth HTTP routes", () => {
       expect(github.exchanges).toHaveLength(2);
       expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(2);
       expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents)).toHaveLength(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("matches Node admission at 16,383/16,384/16,385 tracked bytes with obs-text values", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const acceptedAttempt = await start(app);
+      const rejectedAttempt = await start(app);
+      const acceptedUrl = `/auth/github/callback?code=one-use&state=${acceptedAttempt.state}`;
+      const rejectedUrl = `/auth/github/callback?code=one-use&state=${rejectedAttempt.state}`;
+      const withTrackedSize = (url: string, cookie: string, trackedSize: number): RawByteHeader[] => {
+        const headers: RawByteHeader[] = [
+          { name: "Cookie", value: Buffer.from(cookie, "latin1") },
+          { name: "X-Pad", value: Buffer.alloc(0) },
+        ];
+        const padding = trackedSize - trackedRawHeaderBytes(url, headers);
+        if (padding < 0) throw new Error("negative obs-text boundary padding");
+        headers[1] = { name: "X-Pad", value: Buffer.alloc(padding, 0xe9) };
+        expect(trackedRawHeaderBytes(url, headers)).toBe(trackedSize);
+        return headers;
+      };
+      const port = await listenLoopback(app);
+      const transaction = vi.spyOn(database.db, "transaction");
+      transaction.mockClear();
+
+      const accepted = await rawHttpRequest(port, acceptedUrl, withTrackedSize(acceptedUrl, acceptedAttempt.cookie, 16_383));
+      expect(accepted).toMatchObject({ statusCode: 303, headers: { location: ["/app"] } });
+      expect(transaction).toHaveBeenCalledTimes(3);
+
+      const rejected = await rawHttpRequest(port, rejectedUrl, withTrackedSize(rejectedUrl, rejectedAttempt.cookie, 16_384));
+      const above = await rawHttpRequest(port, rejectedUrl, withTrackedSize(rejectedUrl, rejectedAttempt.cookie, 16_385));
+      expect([rejected.statusCode, above.statusCode]).toEqual([431, 431]);
+      expect(transaction).toHaveBeenCalledTimes(3);
+      expect(github.exchanges).toHaveLength(1);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(1);
+      expect(await database.db.select({ id: auditEvents.id }).from(auditEvents)).toHaveLength(1);
+      const attemptsBeforeRetry = await database.db.select({ consumedAt: oauthAttempts.consumedAt }).from(oauthAttempts);
+      expect(attemptsBeforeRetry.filter((attempt) => attempt.consumedAt === null)).toHaveLength(1);
+
+      const retry = await app.inject({ method: "GET", url: rejectedUrl, headers: { cookie: rejectedAttempt.cookie } });
+      expect(retry.headers.location).toBe("/app");
+      expect(transaction).toHaveBeenCalledTimes(6);
+      expect(github.exchanges).toHaveLength(2);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(2);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents))
+        .toEqual(Array.from({ length: 2 }, () => ({ eventType: "auth.login_succeeded" })));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps injected Latin-1 admission in parity with the real HTTP parser", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const target = await start(app);
+      const url = `/auth/github/callback?code=one-use&state=${target.state}`;
+
+      const callback = await app.inject({
+        method: "GET",
+        url,
+        headers: { cookie: target.cookie, "x-pad": "é".repeat(8_200) },
+      });
+      const replay = await app.inject({ method: "GET", url, headers: { cookie: target.cookie } });
+
+      expect(callback.headers.location).toBe("/app");
+      expect(replay.headers.location).toBe("/?auth_error=github");
+      expect(github.exchanges).toHaveLength(1);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(1);
+      expect(await database.db.select({ eventType: auditEvents.eventType }).from(auditEvents)).toEqual([
+        { eventType: "auth.login_succeeded" },
+        { eventType: "auth.login_failed" },
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("fails closed on injected non-Latin-1 headers before callback work", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const target = await start(app);
+      const url = `/auth/github/callback?code=one-use&state=${target.state}`;
+      const transaction = vi.spyOn(database.db, "transaction");
+      transaction.mockClear();
+
+      const rejected = await app.inject({
+        method: "GET",
+        url,
+        headers: { cookie: target.cookie, "x-pad": "\u0100" },
+      });
+
+      expect(rejected.statusCode).toBe(431);
+      expect(rejected.headers["cache-control"]).toBe("no-store");
+      expect(rejected.json()).toEqual({ error: "request headers too large" });
+      expect(transaction).toHaveBeenCalledTimes(0);
+      expect(github.exchanges).toHaveLength(0);
+      expect(await database.db.select({ id: webSessions.id }).from(webSessions)).toHaveLength(0);
+      expect(await database.db.select({ id: auditEvents.id }).from(auditEvents)).toHaveLength(0);
+      expect((await database.db.select({ consumedAt: oauthAttempts.consumedAt }).from(oauthAttempts))[0]?.consumedAt)
+        .toBeNull();
+
+      const retry = await app.inject({ method: "GET", url, headers: { cookie: target.cookie } });
+      expect(retry.headers.location).toBe("/app");
+      expect(transaction).toHaveBeenCalledTimes(3);
+      expect(github.exchanges).toHaveLength(1);
     } finally {
       await app.close();
     }

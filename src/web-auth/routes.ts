@@ -4,6 +4,7 @@ import type { AuditService } from "../audit/service.js";
 import type { WebAuthConfig } from "../config.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { sendWebHttpError } from "../http-errors.js";
+import { latin1WireByteLength } from "../http-wire.js";
 import type { WebRouteRateLimits } from "../rate-limits.js";
 import type { GitHubOAuthClient } from "./github-client.js";
 import type { IdentityService } from "./identity-service.js";
@@ -84,9 +85,10 @@ function rawCookieFields(request: FastifyRequest): RawCookieFields {
           invalid = true;
           continue;
         }
-        const valueLength = Buffer.byteLength(value, "utf8");
-        totalLength += valueLength;
-        if (count > MAX_COOKIE_FIELDS || valueLength === 0 || valueLength > MAX_COOKIE_HEADER_LENGTH
+        const valueLength = latin1WireByteLength(value);
+        if (valueLength === null) invalid = true;
+        totalLength += valueLength ?? 0;
+        if (count > MAX_COOKIE_FIELDS || valueLength === null || valueLength === 0 || valueLength > MAX_COOKIE_HEADER_LENGTH
           || totalLength > MAX_COOKIE_HEADER_LENGTH) invalid = true;
         fields.push(value);
       }
@@ -98,11 +100,11 @@ function rawCookieFields(request: FastifyRequest): RawCookieFields {
   if (typeof value !== "string") {
     return { fields: [], repeated: false, invalid: true };
   }
-  const valueLength = Buffer.byteLength(value, "utf8");
+  const valueLength = latin1WireByteLength(value);
   return {
     fields: [value],
     repeated: false,
-    invalid: valueLength === 0 || valueLength > MAX_COOKIE_HEADER_LENGTH,
+    invalid: valueLength === null || valueLength === 0 || valueLength > MAX_COOKIE_HEADER_LENGTH,
   };
 }
 

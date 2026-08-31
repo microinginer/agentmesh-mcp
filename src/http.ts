@@ -21,6 +21,7 @@ import { registerAdminRoutes } from "./admin/routes.js";
 import type { AdminRouteDependencies } from "./admin/routes.js";
 import { AgentMeshError } from "./errors.js";
 import { DEFAULT_RATE_LIMITS, type RateLimitConfig } from "./config.js";
+import { latin1WireByteLength } from "./http-wire.js";
 import { createSafeLogger } from "./logging.js";
 import type { SafeLogger } from "./logging.js";
 import { buildMcpHandler } from "./mcp/server.js";
@@ -147,7 +148,9 @@ function exceedsHttpHeaderAdmission(request: { raw: { rawHeaders: string[]; url?
   const track = (value: string): boolean => {
     const remaining = HTTP_MAX_HEADER_SIZE - trackedBytes;
     if (value.length >= remaining) return false;
-    trackedBytes += Buffer.byteLength(value, "utf8");
+    const valueLength = latin1WireByteLength(value);
+    if (valueLength === null) return false;
+    trackedBytes += valueLength;
     return trackedBytes < HTTP_MAX_HEADER_SIZE;
   };
   if (!track(request.raw.url ?? "")) return true;
