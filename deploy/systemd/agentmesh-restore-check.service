@@ -1,0 +1,19 @@
+[Unit]
+Description=Verify the latest AgentMesh backup can be restored
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/agentmesh/scripts/restore-check.sh
+User=root
+Group=root
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/agentmesh
+ReadWritePaths=/var/backups/agentmesh

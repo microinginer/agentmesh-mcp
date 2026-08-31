@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify an AgentMesh backup every week
+
+[Timer]
+OnCalendar=Sun *-*-* 03:11:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=agentmesh-restore-check.service
+
+[Install]
+WantedBy=timers.target

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -23,6 +23,24 @@ describe("production operations scripts", () => {
       expect(source).toContain("umask 077");
       expect(source).not.toContain("set -x");
       expect(source).not.toContain("rm -rf");
+    }
+  });
+
+  it("ships persistent backup and restore verification timers", () => {
+    for (const path of [
+      "deploy/systemd/agentmesh-backup.service",
+      "deploy/systemd/agentmesh-restore-check.service",
+    ]) {
+      expect(existsSync(path), path).toBe(true);
+      const source = readFileSync(path, "utf8");
+      expect(source).toContain("NoNewPrivileges=true");
+    }
+    for (const path of [
+      "deploy/systemd/agentmesh-backup.timer",
+      "deploy/systemd/agentmesh-restore-check.timer",
+    ]) {
+      expect(existsSync(path), path).toBe(true);
+      expect(readFileSync(path, "utf8")).toContain("Persistent=true");
     }
   });
 });

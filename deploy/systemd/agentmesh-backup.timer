@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the AgentMesh database backup daily
+
+[Timer]
+OnCalendar=*-*-* 02:17:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=agentmesh-backup.service
+
+[Install]
+WantedBy=timers.target

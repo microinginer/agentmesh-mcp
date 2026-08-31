@@ -73,6 +73,10 @@ sudo /opt/agentmesh/scripts/backup.sh
 sudo /opt/agentmesh/scripts/restore-check.sh
 ```
 
+The optional systemd units under `deploy/systemd/` schedule a daily backup and
+a weekly isolated restore verification. Install and enable both timers only
+after the two commands above pass manually.
+
 Backups contain user and message data. Store `/var/backups/agentmesh` with the
 same care as the production database and copy it to a separate machine or
 object store for disaster recovery.
