@@ -1,0 +1,9 @@
+title = "AgentMesh gitleaks configuration"
+
+[allowlist]
+description = "Known non-secret test fixtures and documentation placeholders"
+paths = [
+  '''(^|/)test/''',
+  '''(^|/)web/e2e/''',
+  '''\.env\.example$''',
+]

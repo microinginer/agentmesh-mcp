@@ -18,9 +18,11 @@
     "cli": "tsx src/cli.ts",
     "db:generate": "drizzle-kit generate",
     "lint": "oxlint src test scripts *.ts",
+    "audit:repository": "bash scripts/repository-audit.sh",
     "smoke:compose": "tsx scripts/compose-smoke.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
+    "test:e2e": "pnpm --dir web test:e2e",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
