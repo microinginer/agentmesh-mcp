@@ -51,6 +51,10 @@ describe("production deployment topology", () => {
     expect(compose.services.app?.read_only).toBe(true);
     expect(compose.services.app?.cap_drop).toContain("ALL");
     expect(compose.services.app?.security_opt).toContain("no-new-privileges:true");
+    expect(compose.services.postgres?.networks).toEqual(
+      expect.objectContaining({ backend: expect.anything(), observer: expect.anything() }),
+    );
     expect(compose.networks.backend?.internal).toBe(true);
+    expect(compose.networks.observer?.internal).not.toBe(true);
   });
 });
