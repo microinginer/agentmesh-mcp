@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   createMcpHandler,
   McpServer,
+  type AuthInfo,
   type CallToolResult,
   type McpHttpHandler,
 } from "@modelcontextprotocol/server";
@@ -16,6 +17,7 @@ import {
   sendOutputSchema,
   syncInputSchema,
   syncOutputSchema,
+  uuidV4Schema,
 } from "../contracts.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { AgentMeshError } from "../errors.js";
@@ -42,6 +44,18 @@ function toolResult(payload: Record<string, unknown>, isError = false): CallTool
     structuredContent: payload,
     ...(isError ? { isError: true } : {}),
   };
+}
+
+export function connectionTokenIdFromAuthInfo(authInfo: AuthInfo | undefined): string {
+  const extra = authInfo?.extra;
+  if (extra === undefined || Object.keys(extra).length !== 1) {
+    throw new AgentMeshError("PROJECT_AUTH_INVALID", "Project authentication failed");
+  }
+  const parsed = uuidV4Schema.safeParse(extra.connectionTokenId);
+  if (!parsed.success) {
+    throw new AgentMeshError("PROJECT_AUTH_INVALID", "Project authentication failed");
+  }
+  return parsed.data;
 }
 
 export async function runTool(
@@ -100,6 +114,7 @@ export function buildMcpHandler({ db, signingKey, logger }: McpHandlerDependenci
 
   return createMcpHandler(({ authInfo }) => {
     const authenticatedProjectId = authInfo?.clientId;
+    const authenticatedConnectionTokenId = connectionTokenIdFromAuthInfo(authInfo);
     const requireProjectId = (): string => {
       if (authenticatedProjectId === undefined) {
         throw new AgentMeshError("PROJECT_AUTH_INVALID", "Project authentication failed");
@@ -122,7 +137,12 @@ export function buildMcpHandler({ db, signingKey, logger }: McpHandlerDependenci
         const projectId = requireProjectId();
         return runTool(async () => {
           if (input.mode === "register") {
-            const registered = await agentService.registerAgent(projectId, input, context);
+            const registered = await agentService.registerAgent(
+              projectId,
+              input,
+              context,
+              authenticatedConnectionTokenId,
+            );
             return { ok: true, data: { mode: "registered", ...registered } };
           }
 

@@ -113,6 +113,7 @@ export function createAgentService(dependencies: AgentServiceDependencies) {
     projectId: string,
     input: RegisterInput,
     context: OperationContext,
+    registeredViaTokenId: string | null = null,
   ) {
     const now = clock();
     const registrationDigest = digestRegistrationId(projectId, input.session_instance_id);
@@ -125,6 +126,7 @@ export function createAgentService(dependencies: AgentServiceDependencies) {
           .values({
             id: randomUUID(),
             projectId,
+            registeredViaTokenId,
             registrationDigest,
             name: input.name,
             client: input.client,

@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.js";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { projects } from "../src/db/schema.js";
+import { projectTokens, projects } from "../src/db/schema.js";
 import { createProjectService } from "../src/projects/service.js";
 import { resetDatabase } from "./support/database.js";
 
@@ -50,9 +50,13 @@ describe("agentmesh project create CLI", () => {
     const output = JSON.parse(stdout[0] ?? "null") as Record<string, unknown>;
     expect(output).toMatchObject({ name: "My project" });
     expect(output.token).toMatch(/^am_proj_/);
-    await expect(projectService.authenticateProject(String(output.token))).resolves.toBe(
-      output.project_id,
-    );
+    await expect(projectService.authenticateProject(String(output.token))).resolves.toEqual({
+      projectId: output.project_id,
+      connectionTokenId: output.token_id,
+    });
+    const [stored] = await database.db.select({ label: projectTokens.label })
+      .from(projectTokens);
+    expect(stored?.label).toBe("Legacy CLI token");
   });
 
   it("rejects an empty project name without creating state or printing a secret", async () => {

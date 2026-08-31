@@ -26,6 +26,23 @@ export const projectListQuerySchema = z.object({
   limit: z.number().int().min(1).max(100).default(50),
 }).strict();
 
+export const connectionLabelSchema = z.string().max(80).transform((value) => value.trim()).pipe(
+  z.string().min(1).max(80),
+);
+
+export const createConnectionBodySchema = z.object({
+  label: connectionLabelSchema,
+}).strict();
+
+export const connectionPathSchema = z.object({
+  projectId: uuidV4Schema,
+  connectionId: uuidV4Schema,
+}).strict();
+
+export const connectionListQuerySchema = z.object({
+  limit: z.number().int().min(1).max(100).default(50),
+}).strict();
+
 export type CreateProjectBody = z.output<typeof createProjectBodySchema>;
 export type DeleteProjectBody = z.output<typeof deleteProjectBodySchema>;
 export type ProjectListQuery = z.output<typeof projectListQuerySchema>;

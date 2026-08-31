@@ -7,11 +7,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { activityEvents } from "../src/db/schema.js";
+import { createAuditService } from "../src/audit/service.js";
+import { createConnectionService } from "../src/control/connection-service.js";
+import { activityEvents, agents, projects, users } from "../src/db/schema.js";
 import { AgentMeshError } from "../src/errors.js";
 import { buildHttpApp } from "../src/http.js";
 import type { SafeLogEvent } from "../src/logging.js";
-import { runTool } from "../src/mcp/server.js";
+import { connectionTokenIdFromAuthInfo, runTool } from "../src/mcp/server.js";
 import { createProjectService } from "../src/projects/service.js";
 import type { RecordActivityInput } from "../src/activity/service.js";
 import { resetDatabase } from "./support/database.js";
@@ -42,6 +44,31 @@ function structured<T>(result: CallToolResult): T {
 }
 
 describe("AgentMesh MCP over Streamable HTTP", () => {
+  it("accepts only one exact server auth provenance UUID", () => {
+    const connectionTokenId = randomUUID();
+    expect(connectionTokenIdFromAuthInfo({
+      token: "validated-project-token",
+      clientId: randomUUID(),
+      scopes: ["agentmesh"],
+      extra: { connectionTokenId },
+    })).toBe(connectionTokenId);
+
+    for (const extra of [
+      undefined,
+      {},
+      { connectionTokenId: "not-a-uuid" },
+      { connectionTokenId: [connectionTokenId] },
+      { connectionTokenId, injected: randomUUID() },
+    ]) {
+      expect(() => connectionTokenIdFromAuthInfo({
+        token: "validated-project-token",
+        clientId: randomUUID(),
+        scopes: ["agentmesh"],
+        ...(extra === undefined ? {} : { extra }),
+      })).toThrow(expect.objectContaining({ code: "PROJECT_AUTH_INVALID" }));
+    }
+  });
+
   it("logs unauthenticated project requests without credential or identity data", async () => {
     const logged: SafeLogEvent[] = [];
     const app = buildHttpApp({
@@ -76,6 +103,7 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
         });
         expect(response.status).toBe(401);
         expect(response.headers.get("www-authenticate")).toBe("Bearer");
+        expect(response.headers.get("cache-control")).toBe("no-store");
         expect(await response.json()).toEqual({ error: "unauthorized" });
       }
 
@@ -461,6 +489,148 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       expect(serializedEvents).not.toContain("am_proj_");
       expect(serializedEvents).not.toContain("am_agent_");
       expect(serializedEvents).not.toContain("Authorization");
+    } finally {
+      await clientA.close();
+      await clientB.close();
+      await app.close();
+    }
+  });
+
+  it("stores server-derived provenance for two named tokens and revokes only one MCP connection", async () => {
+    const now = new Date("2026-08-31T12:00:00.000Z");
+    const [owner] = await database.db.insert(users).values({ displayName: "MCP owner" }).returning();
+    if (owner === undefined) throw new Error("owner insert failed");
+    const [project] = await database.db.insert(projects).values({
+      ownerUserId: owner.id,
+      name: "Two connections",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    }).returning();
+    if (project === undefined) throw new Error("project insert failed");
+    const connectionService = createConnectionService({
+      db: database.db,
+      audit: createAuditService({ db: database.db, clock: () => new Date(now) }),
+      tokenTtlDays: 90,
+      clock: () => new Date(now),
+    });
+    const first = await connectionService.issue({
+      ownerUserId: owner.id,
+      projectId: project.id,
+      label: "Main Mac",
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+    });
+    const second = await connectionService.issue({
+      ownerUserId: owner.id,
+      projectId: project.id,
+      label: "Second PC",
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+    });
+    if (first.secret === null || second.secret === null) throw new Error("expected connection secrets");
+
+    const app = buildHttpApp({
+      db: database.db,
+      signingKey,
+      projectService: createProjectService({ db: database.db, clock: () => new Date(now) }),
+      host: "127.0.0.1",
+      allowedHosts: ["127.0.0.1", "localhost"],
+      admin: null,
+      logger: { write: () => {} },
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") throw new Error("Expected TCP listener");
+    const endpoint = new URL(`http://127.0.0.1:${address.port}/mcp`);
+    const connect = async (name: string, token: string) => {
+      const transport = new StreamableHTTPClientTransport(endpoint, {
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      });
+      const client = new Client({ name, version: "1.0.0" });
+      await client.connect(transport);
+      return client;
+    };
+    const clientA = await connect("named-a", first.secret);
+    const clientB = await connect("named-b", second.secret);
+    try {
+      const injectedProvenance = await clientA.callTool({
+        name: "agentmesh_sync",
+        arguments: {
+          mode: "register",
+          session_instance_id: randomUUID(),
+          name: "injected-agent",
+          client: "codex",
+          capabilities: [],
+          registered_via_token_id: second.connectionId,
+        },
+      });
+      expect(injectedProvenance.isError).toBe(true);
+      expect(await database.db.select().from(agents)).toEqual([]);
+
+      const registrationA = structured<{ ok: true; data: { agent: { id: string } } }>(
+        await clientA.callTool({
+          name: "agentmesh_sync",
+          arguments: {
+            mode: "register",
+            session_instance_id: randomUUID(),
+            name: "main-mac-agent",
+            client: "codex",
+            capabilities: ["backend"],
+          },
+        }),
+      );
+      const registrationB = structured<{ ok: true; data: { agent: { id: string } } }>(
+        await clientB.callTool({
+          name: "agentmesh_sync",
+          arguments: {
+            mode: "register",
+            session_instance_id: randomUUID(),
+            name: "second-pc-agent",
+            client: "codex",
+            capabilities: ["review"],
+          },
+        }),
+      );
+      const rows = await database.db.select({
+        id: agents.id,
+        registeredViaTokenId: agents.registeredViaTokenId,
+      }).from(agents).where(eq(agents.projectId, project.id));
+      expect(rows).toEqual(expect.arrayContaining([
+        { id: registrationA.data.agent.id, registeredViaTokenId: first.connectionId },
+        { id: registrationB.data.agent.id, registeredViaTokenId: second.connectionId },
+      ]));
+
+      await connectionService.revoke({
+        ownerUserId: owner.id,
+        projectId: project.id,
+        connectionId: first.connectionId,
+        requestId: randomUUID(),
+      });
+      const requestBody = JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/list", params: {} });
+      const firstAfterRevoke = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          authorization: `Bearer ${first.secret}`,
+        },
+        body: requestBody,
+      });
+      expect(firstAfterRevoke.status).toBe(401);
+      expect(firstAfterRevoke.headers.get("cache-control")).toBe("no-store");
+      const secondStillWorks = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          authorization: `Bearer ${second.secret}`,
+        },
+        body: requestBody,
+      });
+      expect(secondStillWorks.status).toBe(200);
+      expect(secondStillWorks.headers.get("cache-control")).toBe("no-store");
+      expect(JSON.stringify(await database.db.select().from(activityEvents))).not.toContain(first.secret);
     } finally {
       await clientA.close();
       await clientB.close();

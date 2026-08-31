@@ -54,7 +54,18 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
     signingKey: dependencies.signingKey,
     logger,
   });
-  const nodeHandler = toNodeHandler(mcpHandler);
+  const nodeHandler = toNodeHandler({
+    fetch: async (request, options) => {
+      const response = await mcpHandler.fetch(request, options);
+      const headers = new Headers(response.headers);
+      headers.set("Cache-Control", "no-store");
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    },
+  });
 
   app.get("/health", async () => ({ status: "ok" }));
 
@@ -66,15 +77,16 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
   }
 
   app.post("/mcp", async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
     const bearer = bearerFromHeader(request.headers.authorization);
     if (bearer === null) {
       logger.write({ event: "http.request_failed" });
       return reply.header("WWW-Authenticate", "Bearer").code(401).send({ error: "unauthorized" });
     }
 
-    let projectId: string;
+    let authenticatedProject: Awaited<ReturnType<ProjectService["authenticateProject"]>>;
     try {
-      projectId = await dependencies.projectService.authenticateProject(bearer);
+      authenticatedProject = await dependencies.projectService.authenticateProject(bearer);
     } catch (error) {
       if (error instanceof AgentMeshError && error.code === "PROJECT_AUTH_INVALID") {
         logger.write({ event: "http.request_failed" });
@@ -86,8 +98,9 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
 
     (request.raw as AuthenticatedIncomingMessage).auth = {
       token: "validated-project-token",
-      clientId: projectId,
+      clientId: authenticatedProject.projectId,
       scopes: ["agentmesh"],
+      extra: { connectionTokenId: authenticatedProject.connectionTokenId },
     };
     reply.hijack();
     await nodeHandler(

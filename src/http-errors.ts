@@ -10,6 +10,8 @@ export type WebHttpErrorCode =
   | "PROJECT_LIMIT_REACHED"
   | "PROJECT_STATE_CONFLICT"
   | "PROJECT_CONFIRMATION_MISMATCH"
+  | "CONNECTION_NOT_FOUND"
+  | "CONNECTION_STATE_CONFLICT"
   | "RECENT_AUTH_REQUIRED"
   | "CONTROL_UNAVAILABLE";
 
@@ -23,6 +25,8 @@ const messages: Record<WebHttpErrorCode, string> = {
   PROJECT_LIMIT_REACHED: "Active project limit reached",
   PROJECT_STATE_CONFLICT: "Project lifecycle state conflict",
   PROJECT_CONFIRMATION_MISMATCH: "Project name confirmation did not match",
+  CONNECTION_NOT_FOUND: "Connection was not found",
+  CONNECTION_STATE_CONFLICT: "Connection lifecycle state conflict",
   RECENT_AUTH_REQUIRED: "Recent GitHub authentication is required",
   CONTROL_UNAVAILABLE: "Control plane is temporarily unavailable",
 };
