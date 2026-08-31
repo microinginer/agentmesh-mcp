@@ -18,6 +18,9 @@ const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const composeProject = process.env.AGENTMESH_SMOKE_PROJECT ?? "agentmesh-mvp-smoke";
 const port = Number(process.env.AGENTMESH_SMOKE_PORT ?? "31337");
 const smokeAdminToken = Buffer.alloc(32, 11).toString("base64url");
+const smokeSigningKey = Buffer.alloc(32, 12).toString("base64url");
+const smokePostgresPassword = `smoke-postgres-${randomUUID()}`;
+const infrastructureSecrets = [smokeAdminToken, smokeSigningKey, smokePostgresPassword];
 
 assert.match(composeProject, /^[a-z0-9][a-z0-9_-]*$/);
 assert.match(composeProject, /(?:^|[-_])smoke(?:[-_]|$)/, "Smoke project name must contain 'smoke'");
@@ -28,6 +31,23 @@ const childEnvironment = {
   AGENTMESH_PORT: String(port),
   AGENTMESH_ADMIN_TOKEN: smokeAdminToken,
   AGENTMESH_ADMIN_COOKIE_SECURE: "0",
+  AGENTMESH_DB_OBSERVER_PASSWORD: "",
+  AGENT_SESSION_SIGNING_KEY: smokeSigningKey,
+  POSTGRES_PASSWORD: smokePostgresPassword,
+  ALLOWED_HOSTS: "localhost,127.0.0.1",
+  GITHUB_OAUTH_CLIENT_ID: "",
+  GITHUB_OAUTH_CLIENT_SECRET: "",
+  GITHUB_OAUTH_CALLBACK_URL: "",
+  AGENTMESH_PUBLIC_ORIGIN: "",
+  AGENTMESH_WEB_AUTH_KEY: "",
+  AGENTMESH_OPERATOR_GITHUB_IDS: "",
+  AGENTMESH_PROJECT_LIMIT: "",
+  AGENTMESH_TOKEN_TTL_DAYS: "",
+  AGENTMESH_RATE_LIMIT_OAUTH_START: "20",
+  AGENTMESH_RATE_LIMIT_OWNER_READ: "300",
+  AGENTMESH_RATE_LIMIT_OWNER_MUTATION: "60",
+  AGENTMESH_RATE_LIMIT_CONNECTION_CREATE: "10",
+  AGENTMESH_RATE_LIMIT_MCP: "600",
 };
 const endpoint = new URL(`http://127.0.0.1:${port}/mcp`);
 
@@ -55,14 +75,17 @@ function execFileText(file: string, args: string[]): Promise<string> {
 }
 
 async function compose(...args: string[]): Promise<string> {
-  return execFileText("docker", ["compose", "-p", composeProject, ...args]);
+  return execFileText("docker", ["compose", "--env-file", "/dev/null", "-p", composeProject, ...args]);
 }
 
-async function waitForHealth(): Promise<void> {
+async function waitForReady(): Promise<void> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
-      const healthy = await withBoundedResponse(new URL("/health", endpoint), {}, async (response) => response.ok, 1_000);
-      if (healthy) {
+      const [healthy, ready] = await Promise.all([
+        withBoundedResponse(new URL("/health", endpoint), {}, async (response) => response.ok, 1_000),
+        withBoundedResponse(new URL("/ready", endpoint), {}, async (response) => response.ok, 1_000),
+      ]);
+      if (healthy && ready) {
         return;
       }
     } catch {
@@ -70,7 +93,7 @@ async function waitForHealth(): Promise<void> {
     }
     await delay(500);
   }
-  throw new Error("AgentMesh did not become healthy after restart");
+  throw new Error("AgentMesh did not become ready after restart");
 }
 
 type AdminSummary = {
@@ -247,7 +270,20 @@ async function main(): Promise<{
   activity: { sent: number; send_failed: number; acknowledged: number };
 }> {
   await compose("down", "--volumes", "--remove-orphans");
-  await compose("up", "--build", "--force-recreate", "-d", "--wait");
+  const startupOutput = await compose("up", "--build", "--force-recreate", "-d", "--wait");
+  assertSecretFree(startupOutput, infrastructureSecrets);
+  await waitForReady();
+
+  const headlessAuthStatus = await withBoundedResponse(
+    new URL("/auth/github/start", endpoint),
+    {},
+    async (response) => response.status,
+  );
+  assert.equal(headlessAuthStatus, 404, "Hosted OAuth routes must be absent in headless mode");
+  const imageId = (await compose("images", "-q", "agentmesh")).trim();
+  assert.match(imageId, /^[a-f0-9:]{12,128}$/i, "Compose did not return the application image ID");
+  const imageHistory = await execFileText("docker", ["image", "history", "--no-trunc", imageId]);
+  assertSecretFree(imageHistory, infrastructureSecrets);
 
   const provisionedOutput = await compose(
     "exec",
@@ -274,8 +310,35 @@ async function main(): Promise<{
   const projectToken = provisioned.token;
   assert.equal(projectToken.startsWith("am_proj_"), true, "CLI returned an invalid project token");
 
+  const secondConnectionOutput = await compose(
+    "exec",
+    "-T",
+    "agentmesh",
+    "node",
+    "--input-type=module",
+    "-e",
+    [
+      "const {createProjectToken}=await import('./dist/auth/project-token.js')",
+      "const {createDatabase}=await import('./dist/db/client.js')",
+      "const {projectTokens}=await import('./dist/db/schema.js')",
+      "const database=createDatabase(process.env.DATABASE_URL)",
+      "try {",
+      "const token=createProjectToken()",
+      "await database.db.insert(projectTokens).values({id:token.tokenId,projectId:process.argv[1],tokenDigest:token.digest,label:'Second smoke computer'})",
+      "process.stdout.write(JSON.stringify({token_id:token.tokenId,token:token.token}))",
+      "} finally { await database.pool.end() }",
+    ].join(";"),
+    projectId,
+  );
+  const secondConnection = JSON.parse(secondConnectionOutput) as { token_id?: unknown; token?: unknown };
+  assert.equal(typeof secondConnection.token_id, "string", "Second connection has no token ID");
+  assert.equal(typeof secondConnection.token, "string", "Second connection has no token");
+  const secondProjectToken = secondConnection.token as string;
+  assert.equal(secondProjectToken.startsWith("am_proj_"), true, "Second connection returned an invalid token");
+  assert.notEqual(secondProjectToken, projectToken, "Two smoke computers must use separate project tokens");
+
   const firstA = await connectClient("smoke-agent-a-before-restart", projectToken);
-  const firstB = await connectClient("smoke-agent-b-before-restart", projectToken);
+  const firstB = await connectClient("smoke-agent-b-before-restart", secondProjectToken);
 
   let agentA!: { id: string; token: string };
   let agentB!: { id: string; token: string };
@@ -366,10 +429,10 @@ async function main(): Promise<{
   }
 
   await compose("restart", "agentmesh");
-  await waitForHealth();
+  await waitForReady();
 
   const secondA = await connectClient("smoke-agent-a-after-restart", projectToken);
-  const secondB = await connectClient("smoke-agent-b-after-restart", projectToken);
+  const secondB = await connectClient("smoke-agent-b-after-restart", secondProjectToken);
   let replyMessageId!: string;
   try {
     const redelivered = structured<{
@@ -459,15 +522,21 @@ async function main(): Promise<{
   }
 
   const preRestartCookie = await adminLogin();
-  const secrets = [smokeAdminToken, projectToken, agentA.token, agentB.token];
+  const secrets = [
+    ...infrastructureSecrets,
+    projectToken,
+    secondProjectToken,
+    agentA.token,
+    agentB.token,
+  ];
   const preRestartState = await readAdminState(projectId, preRestartCookie, secrets);
   assertAdminState(preRestartState, { projectId, messageIds: [outboundMessageId, replyMessageId] }, secrets);
 
   await compose("restart", "agentmesh");
-  await waitForHealth();
+  await waitForReady();
 
   const finalA = await connectClient("smoke-agent-a-final", projectToken);
-  const finalB = await connectClient("smoke-agent-b-final", projectToken);
+  const finalB = await connectClient("smoke-agent-b-final", secondProjectToken);
   try {
     for (const [client, token] of [
       [finalA, agentA.token],
@@ -496,6 +565,8 @@ async function main(): Promise<{
 
   const healthStatus = await withBoundedResponse(new URL("/health", endpoint), {}, async (response) => response.status);
   if (healthStatus !== 200) throw new Error(SAFE_HTTP_ERROR);
+  const readyStatus = await withBoundedResponse(new URL("/ready", endpoint), {}, async (response) => response.status);
+  if (readyStatus !== 200) throw new Error(SAFE_HTTP_ERROR);
   const adminPageStatus = await withBoundedResponse(new URL("/admin", endpoint), {}, async (response) => response.status);
   if (adminPageStatus !== 200) throw new Error(SAFE_HTTP_ERROR);
 

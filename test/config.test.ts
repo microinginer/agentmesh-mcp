@@ -37,6 +37,48 @@ describe("runtime configuration", () => {
       allowedHosts: ["127.0.0.1", "localhost", "[::1]"],
     });
     expect(config.signingKey).toEqual(Buffer.alloc(32, 7));
+    expect(config.rateLimits).toEqual({
+      oauthStart: 20,
+      ownerRead: 300,
+      ownerMutation: 60,
+      connectionCreate: 10,
+      mcp: 600,
+    });
+  });
+
+  it("loads bounded self-hosted rate-limit overrides independently of hosted mode", () => {
+    const config = loadConfig({
+      DATABASE_URL: databaseUrl,
+      AGENT_SESSION_SIGNING_KEY: key,
+      AGENTMESH_RATE_LIMIT_OAUTH_START: "7",
+      AGENTMESH_RATE_LIMIT_OWNER_READ: "8",
+      AGENTMESH_RATE_LIMIT_OWNER_MUTATION: "9",
+      AGENTMESH_RATE_LIMIT_CONNECTION_CREATE: "10",
+      AGENTMESH_RATE_LIMIT_MCP: "11",
+    });
+
+    expect(config.web).toBeNull();
+    expect(config.rateLimits).toEqual({
+      oauthStart: 7,
+      ownerRead: 8,
+      ownerMutation: 9,
+      connectionCreate: 10,
+      mcp: 11,
+    });
+  });
+
+  it.each([
+    ["AGENTMESH_RATE_LIMIT_OAUTH_START", "0"],
+    ["AGENTMESH_RATE_LIMIT_OWNER_READ", "-1"],
+    ["AGENTMESH_RATE_LIMIT_OWNER_MUTATION", "1.5"],
+    ["AGENTMESH_RATE_LIMIT_CONNECTION_CREATE", "100001"],
+    ["AGENTMESH_RATE_LIMIT_MCP", "not-a-number"],
+  ])("fails closed for invalid bounded rate setting %s", (name, value) => {
+    expect(() => loadConfig({
+      DATABASE_URL: databaseUrl,
+      AGENT_SESSION_SIGNING_KEY: key,
+      [name]: value,
+    })).toThrow(`Invalid AgentMesh configuration: ${name}`);
   });
 
   it("accepts an explicit bind address, port, and host allow-list", () => {

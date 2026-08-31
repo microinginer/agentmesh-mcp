@@ -1,6 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
 
-import { createAuditService } from "../audit/service.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { oauthIdentities, users } from "../db/schema.js";
 import type { GitHubProfile } from "./github-client.js";
@@ -25,7 +24,6 @@ type SnapshotExecutor = Pick<AgentMeshDatabase, "update">;
 export function createIdentityService(dependencies: IdentityServiceDependencies) {
   const { db } = dependencies;
   const clock = dependencies.clock ?? (() => new Date());
-  const audit = createAuditService({ db, clock });
 
   async function applyProfileSnapshots(
     executor: SnapshotExecutor,
@@ -52,8 +50,7 @@ export function createIdentityService(dependencies: IdentityServiceDependencies)
 
   async function upsertGitHub(profile: GitHubProfile): Promise<GitHubIdentity> {
     const now = clock();
-    try {
-      return await db.transaction(async (transaction) => {
+    return db.transaction(async (transaction) => {
         // Serialize every immutable provider identity before allocating its local user.
         // The transaction-scoped PostgreSQL advisory lock prevents a losing callback
         // from leaving behind a user row after the identity uniqueness race.
@@ -124,21 +121,8 @@ export function createIdentityService(dependencies: IdentityServiceDependencies)
 
         await applyProfileSnapshots(transaction, userId, profile, now);
 
-        await audit.record({
-          userId,
-          eventType: "auth.login_succeeded",
-          metadata: { provider: "github" },
-        }, transaction);
         return { userId };
       });
-    } catch (error) {
-      await audit.recordBestEffort({
-        userId: null,
-        eventType: "auth.login_failed",
-        metadata: { provider: "github" },
-      });
-      throw error;
-    }
   }
 
   return { upsertGitHub };

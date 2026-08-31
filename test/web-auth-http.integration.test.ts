@@ -269,6 +269,80 @@ describe("web OAuth HTTP routes", () => {
     }
   });
 
+  it("records one truthful OAuth outcome only after durable session issuance", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const failed = buildWebApp({
+      github: github.client,
+      wrapSessionService: (service) => ({
+        ...service,
+        issue: async () => null,
+      }),
+    });
+    try {
+      const attempt = await start(failed.app);
+      const callback = await failed.app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${attempt.state}`,
+        headers: { cookie: attempt.cookie },
+      });
+      expect(callback.headers.location).toBe("/?auth_error=github");
+      expect(await database.db.select().from(auditEvents)).toEqual([
+        expect.objectContaining({
+          userId: null,
+          eventType: "auth.login_failed",
+          metadata: { provider: "github" },
+        }),
+      ]);
+    } finally {
+      await failed.app.close();
+    }
+
+    await resetDatabase(database.pool);
+    const successful = buildWebApp({ github: github.client });
+    try {
+      const attempt = await start(successful.app);
+      const callback = await successful.app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${attempt.state}`,
+        headers: { cookie: attempt.cookie },
+      });
+      expect(callback.headers.location).toBe("/app");
+      expect(await database.db.select().from(auditEvents)).toEqual([
+        expect.objectContaining({
+          userId: expect.any(String),
+          eventType: "auth.login_succeeded",
+          metadata: { provider: "github" },
+        }),
+      ]);
+    } finally {
+      await successful.app.close();
+    }
+  });
+
+  it("records one safe failure for a callback rejected before provider exchange", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const attempt = await start(app);
+      const callback = await app.inject({
+        method: "GET",
+        url: "/auth/github/callback?error=access_denied",
+        headers: { cookie: attempt.cookie },
+      });
+      expect(callback.headers.location).toBe("/?auth_error=github");
+      expect(github.exchanges).toHaveLength(0);
+      expect(await database.db.select().from(auditEvents)).toEqual([
+        expect.objectContaining({
+          userId: null,
+          eventType: "auth.login_failed",
+          metadata: { provider: "github" },
+        }),
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("uses exact host-only secure cookies without colliding with the emergency admin cookie", async () => {
     const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
     const { app } = buildWebApp({ github: github.client, secureCookies: true });

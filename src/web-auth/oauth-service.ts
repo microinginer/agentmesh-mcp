@@ -154,6 +154,11 @@ export function createOAuthService(dependencies: OAuthServiceDependencies): OAut
           identity.userId,
         );
       if (session === null) return failed();
+      await dependencies.auditService.recordBestEffort({
+        userId: identity.userId,
+        eventType: "auth.login_succeeded",
+        metadata: { provider: "github" },
+      });
       return { session, returnTo: input.attempt.returnTo ?? "/app" };
     } catch {
       return failed();

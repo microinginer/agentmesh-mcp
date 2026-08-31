@@ -623,6 +623,8 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       });
       expect(firstAfterRevoke.status).toBe(401);
       expect(firstAfterRevoke.headers.get("cache-control")).toBe("no-store");
+      expect(firstAfterRevoke.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(firstAfterRevoke.headers.get("referrer-policy")).toBe("no-referrer");
       const secondStillWorks = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -634,6 +636,7 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       });
       expect(secondStillWorks.status).toBe(200);
       expect(secondStillWorks.headers.get("cache-control")).toBe("no-store");
+      expect(secondStillWorks.headers.get("content-security-policy")).toContain("default-src 'none'");
       expect(JSON.stringify(await database.db.select().from(activityEvents))).not.toContain(first.secret);
     } finally {
       await clientA.close();

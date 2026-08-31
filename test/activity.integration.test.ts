@@ -72,6 +72,7 @@ async function createProjectMessageFixture() {
 
 describe("activity journal persistence", () => {
   it("writes only the closed safe logger DTO as one stderr JSON line", () => {
+    const projectId = "550e8400-e29b-41d4-a716-446655440000";
     const writes: string[] = [];
     vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
       writes.push(String(chunk));
@@ -82,7 +83,7 @@ describe("activity journal persistence", () => {
     logger.write({
       event: "mcp.request_failed",
       request_id: "request-123",
-      project_id: "project-456",
+      project_id: projectId,
       error_code: "INTERNAL_ERROR",
       ...({
         text: "attempted message must not be logged",
@@ -92,7 +93,7 @@ describe("activity journal persistence", () => {
     });
 
     expect(writes).toEqual([
-      '{"event":"mcp.request_failed","request_id":"request-123","project_id":"project-456","error_code":"INTERNAL_ERROR"}\n',
+      `{"event":"mcp.request_failed","request_id":"request-123","project_id":"${projectId}","error_code":"INTERNAL_ERROR"}\n`,
     ]);
   });
 

@@ -40,6 +40,49 @@ Put the first generated value in `AGENT_SESSION_SIGNING_KEY` and the hexadecimal
 value in `POSTGRES_PASSWORD`. Set `ALLOWED_HOSTS` to the public hostname and
 terminate TLS at a reverse proxy.
 
+`/health` reports process liveness without touching PostgreSQL. `/ready` is the
+container healthcheck and returns success only when PostgreSQL responds and the
+database contains this image's latest migration. A database with newer additive
+migrations remains ready for rollback compatibility.
+
+## Optional GitHub-hosted control plane
+
+GitHub sign-in and owner APIs are optional. If the complete group below is
+omitted or blank, `/auth/github/*` and `/api/v1/*` stay absent while MCP, CLI
+provisioning, and the optional legacy admin dashboard continue to work:
+
+```dotenv
+GITHUB_OAUTH_CLIENT_ID=your-oauth-app-client-id
+GITHUB_OAUTH_CLIENT_SECRET=generate-and-store-outside-git
+GITHUB_OAUTH_CALLBACK_URL=https://YOUR_DOMAIN/auth/github/callback
+AGENTMESH_PUBLIC_ORIGIN=https://YOUR_DOMAIN
+AGENTMESH_WEB_AUTH_KEY=generate-a-separate-32-byte-base64url-key
+AGENTMESH_OPERATOR_GITHUB_IDS=12345678,87654321
+AGENTMESH_PROJECT_LIMIT=5
+```
+
+Create a GitHub OAuth App whose callback URL is exactly
+`https://YOUR_DOMAIN/auth/github/callback`. Operator IDs are immutable numeric
+GitHub user IDs written as comma-separated digits, never logins. Generate the
+web auth key independently from the agent-session signing key:
+
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'
+```
+
+`AGENTMESH_PROJECT_LIMIT=0` means unlimited projects for self-hosting. Named
+connection tokens default to 90 days; `AGENTMESH_TOKEN_TTL_DAYS` changes that
+default. Abuse-control maxima are configurable with
+`AGENTMESH_RATE_LIMIT_OAUTH_START`, `AGENTMESH_RATE_LIMIT_OWNER_READ`,
+`AGENTMESH_RATE_LIMIT_OWNER_MUTATION`,
+`AGENTMESH_RATE_LIMIT_CONNECTION_CREATE`, and `AGENTMESH_RATE_LIMIT_MCP`.
+
+Create one named connection token per computer. The complete token is returned
+only by its first successful creation response. Put it in an environment-backed
+MCP configuration. Never place it in a repository, prompt, `AGENTS.md`,
+`.mcp.json`, screenshot, issue, or ordinary chat message. Two computers can use
+separate tokens for the same project; revoking one does not revoke the other.
+
 ## Observe AgentMesh locally
 
 The optional dashboard is an observational surface: it can read projects,

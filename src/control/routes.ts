@@ -9,6 +9,7 @@ import {
 import type { WebAuthConfig } from "../config.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { sendWebHttpError } from "../http-errors.js";
+import type { WebRouteRateLimits } from "../rate-limits.js";
 import { createWebAuthMiddleware } from "../web-auth/middleware.js";
 import type { WebSessionService } from "../web-auth/session-service.js";
 import {
@@ -46,6 +47,7 @@ export interface ControlRouteDependencies {
   config: WebAuthConfig;
   sessionService: WebSessionService;
   auditService: AuditService;
+  rateLimits?: WebRouteRateLimits;
   clock?: () => Date;
 }
 
@@ -215,12 +217,16 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
   };
   const readOptions = {
     onRequest: noStore,
-    preHandler: middleware.requireSession,
+    preHandler: dependencies.rateLimits === undefined
+      ? middleware.requireSession
+      : [middleware.requireSession, dependencies.rateLimits.ownerRead],
     errorHandler: invalidPayload,
   };
   const mutationOptions = {
     onRequest: noStore,
-    preHandler: middleware.requireMutation,
+    preHandler: dependencies.rateLimits === undefined
+      ? middleware.requireMutation
+      : [middleware.requireMutation, dependencies.rateLimits.ownerMutation],
     errorHandler: invalidPayload,
     bodyLimit: 4_096,
   };
@@ -418,7 +424,18 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     }
   });
 
-  app.post("/api/v1/projects/:projectId/connections", mutationOptions, async (request, reply) => {
+  const connectionMutationOptions = dependencies.rateLimits === undefined
+    ? mutationOptions
+    : {
+        ...mutationOptions,
+        preHandler: [
+          middleware.requireMutation,
+          dependencies.rateLimits.ownerMutation,
+          dependencies.rateLimits.connectionCreate,
+        ],
+      };
+
+  app.post("/api/v1/projects/:projectId/connections", connectionMutationOptions, async (request, reply) => {
     if (request.webSession === null) return;
     const projectId = parsePath(request);
     const body = createConnectionBodySchema.safeParse(request.body);

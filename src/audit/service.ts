@@ -78,6 +78,16 @@ export function createAuditService(dependencies: AuditServiceDependencies) {
     input: RecordAuditInput,
     executor: AuditExecutor = db,
   ): Promise<void> {
+    if (input.subjectUserId !== undefined && input.subjectUserId !== null && safeUuid(input.subjectUserId) === undefined) {
+      throw new Error("Invalid audit attribution");
+    }
+    if (input.actor !== undefined) {
+      const actor = input.actor as { kind?: unknown; userId?: unknown };
+      if (actor.kind !== "headless_cli"
+        && (actor.kind !== "user" || safeUuid(actor.userId) === undefined)) {
+        throw new Error("Invalid audit attribution");
+      }
+    }
     const explicitSubject = input.subjectUserId === undefined
       ? undefined
       : safeUuid(input.subjectUserId);

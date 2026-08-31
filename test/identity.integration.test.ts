@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { auditEvents, oauthIdentities, users } from "../src/db/schema.js";
+import { oauthIdentities, users } from "../src/db/schema.js";
 import { createIdentityService } from "../src/web-auth/identity-service.js";
 import { resetDatabase } from "./support/database.js";
 
@@ -112,7 +112,6 @@ describe("durable GitHub identities", () => {
       const [user] = await database.db.select().from(users).where(eq(users.id, externalUserId!));
       const [identityCount] = await database.db.select({ identities: count() }).from(oauthIdentities);
       const [userCount] = await database.db.select({ localUsers: count() }).from(users);
-      const [audit] = await database.db.select().from(auditEvents).where(eq(auditEvents.eventType, "auth.login_succeeded"));
       expect(identity).toMatchObject({
         userId: externalUserId,
         login: "current-octocat",
@@ -127,12 +126,6 @@ describe("durable GitHub identities", () => {
       });
       expect(identityCount?.identities).toBe(1);
       expect(userCount?.localUsers).toBe(1);
-      expect(audit).toMatchObject({
-        userId: externalUserId,
-        eventType: "auth.login_succeeded",
-        metadata: { provider: "github" },
-      });
-      expect(JSON.stringify(audit?.metadata)).not.toContain("current-octocat");
     } finally {
       if (!committed) {
         await rollbackAndRelease(externalWriter);
@@ -180,19 +173,14 @@ describe("durable GitHub identities", () => {
     });
   });
 
-  it("writes safe audit metadata for successful identity persistence", async () => {
+  it("does not claim a successful login from identity persistence alone", async () => {
     const service = createIdentityService({ db: database.db });
     await service.upsertGitHub({ id: "42", login: "octocat", name: null, avatarUrl: null });
 
-    const [success] = await database.db.select().from(auditEvents).where(eq(auditEvents.eventType, "auth.login_succeeded"));
-    expect(success).toMatchObject({
-      eventType: "auth.login_succeeded",
-      metadata: { provider: "github" },
-    });
-    expect(JSON.stringify(success?.metadata)).not.toContain("octocat");
+    expect(await database.pool.query("SELECT * FROM audit_events").then((result) => result.rows)).toHaveLength(0);
   });
 
-  it("writes only provider metadata when identity persistence fails", async () => {
+  it("leaves OAuth outcome auditing to the orchestration layer when identity persistence fails", async () => {
     const service = createIdentityService({ db: database.db });
     const unsafeDisplayName = "name-that-must-not-enter-the-audit-event-".repeat(4);
 
@@ -203,13 +191,7 @@ describe("durable GitHub identities", () => {
       avatarUrl: null,
     })).rejects.toThrow();
 
-    const [failure] = await database.db.select().from(auditEvents).where(eq(auditEvents.eventType, "auth.login_failed"));
-    expect(failure).toMatchObject({
-      userId: null,
-      eventType: "auth.login_failed",
-      metadata: { provider: "github" },
-    });
-    expect(JSON.stringify(failure?.metadata)).not.toContain(unsafeDisplayName);
+    expect(await database.pool.query("SELECT * FROM audit_events").then((result) => result.rows)).toHaveLength(0);
     const [userCount] = await database.db.select({ localUsers: count() }).from(users);
     expect(userCount?.localUsers).toBe(0);
   });

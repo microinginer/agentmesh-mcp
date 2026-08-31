@@ -28,6 +28,11 @@ const environmentSchema = z.object({
   AGENTMESH_OPERATOR_GITHUB_IDS: z.string().optional(),
   AGENTMESH_PROJECT_LIMIT: z.string().optional(),
   AGENTMESH_TOKEN_TTL_DAYS: z.string().optional(),
+  AGENTMESH_RATE_LIMIT_OAUTH_START: z.string().optional(),
+  AGENTMESH_RATE_LIMIT_OWNER_READ: z.string().optional(),
+  AGENTMESH_RATE_LIMIT_OWNER_MUTATION: z.string().optional(),
+  AGENTMESH_RATE_LIMIT_CONNECTION_CREATE: z.string().optional(),
+  AGENTMESH_RATE_LIMIT_MCP: z.string().optional(),
 });
 
 const hostedRequiredEnvironmentNames = [
@@ -43,6 +48,22 @@ const hostedRequiredEnvironmentNames = [
 type HostedRequiredEnvironmentName = (typeof hostedRequiredEnvironmentNames)[number];
 
 const DEFAULT_TOKEN_TTL_DAYS = 90;
+
+export interface RateLimitConfig {
+  oauthStart: number;
+  ownerRead: number;
+  ownerMutation: number;
+  connectionCreate: number;
+  mcp: number;
+}
+
+export const DEFAULT_RATE_LIMITS: Readonly<RateLimitConfig> = Object.freeze({
+  oauthStart: 20,
+  ownerRead: 300,
+  ownerMutation: 60,
+  connectionCreate: 10,
+  mcp: 600,
+});
 
 export interface AdminConfig {
   tokenDigest: Buffer;
@@ -70,6 +91,7 @@ export interface AgentMeshConfig {
   allowedHosts: string[];
   admin: AdminConfig | null;
   web: WebAuthConfig | null;
+  rateLimits: RateLimitConfig;
 }
 
 function isBlank(value: string | undefined): boolean {
@@ -132,6 +154,10 @@ function parseBoundedInteger(value: string, field: string, minimum: number, maxi
     throw new Error(`Invalid AgentMesh configuration: ${field}`);
   }
   return number;
+}
+
+function parseRateLimit(value: string | undefined, field: string, defaultValue: number): number {
+  return isBlank(value) ? defaultValue : parseBoundedInteger(value ?? "", field, 1, 100_000);
 }
 
 function parseOperatorGitHubIds(value: string): ReadonlySet<string> {
@@ -220,6 +246,33 @@ export function loadConfig(environment: Record<string, string | undefined>): Age
   }
 
   const web = createWebAuthConfig(parsed.data);
+  const rateLimits: RateLimitConfig = {
+    oauthStart: parseRateLimit(
+      parsed.data.AGENTMESH_RATE_LIMIT_OAUTH_START,
+      "AGENTMESH_RATE_LIMIT_OAUTH_START",
+      DEFAULT_RATE_LIMITS.oauthStart,
+    ),
+    ownerRead: parseRateLimit(
+      parsed.data.AGENTMESH_RATE_LIMIT_OWNER_READ,
+      "AGENTMESH_RATE_LIMIT_OWNER_READ",
+      DEFAULT_RATE_LIMITS.ownerRead,
+    ),
+    ownerMutation: parseRateLimit(
+      parsed.data.AGENTMESH_RATE_LIMIT_OWNER_MUTATION,
+      "AGENTMESH_RATE_LIMIT_OWNER_MUTATION",
+      DEFAULT_RATE_LIMITS.ownerMutation,
+    ),
+    connectionCreate: parseRateLimit(
+      parsed.data.AGENTMESH_RATE_LIMIT_CONNECTION_CREATE,
+      "AGENTMESH_RATE_LIMIT_CONNECTION_CREATE",
+      DEFAULT_RATE_LIMITS.connectionCreate,
+    ),
+    mcp: parseRateLimit(
+      parsed.data.AGENTMESH_RATE_LIMIT_MCP,
+      "AGENTMESH_RATE_LIMIT_MCP",
+      DEFAULT_RATE_LIMITS.mcp,
+    ),
+  };
 
   return {
     databaseUrl: parsed.data.DATABASE_URL,
@@ -229,5 +282,6 @@ export function loadConfig(environment: Record<string, string | undefined>): Age
     allowedHosts,
     admin,
     web,
+    rateLimits,
   };
 }

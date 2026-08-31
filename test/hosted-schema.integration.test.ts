@@ -254,6 +254,32 @@ describe("hosted control-plane schema", () => {
     expect(JSON.stringify(events)).not.toContain(plantedSecret);
   });
 
+  it("fails closed for explicitly malformed structured audit attribution while preserving legacy calls", async () => {
+    const service = createAuditService({ db: database.db });
+    await expect(service.record({
+      actor: { kind: "user", userId: "not-a-uuid" },
+      eventType: "operator.user_blocked",
+    })).rejects.toThrow("Invalid audit attribution");
+    await expect(service.record({
+      subjectUserId: "not-a-uuid",
+      eventType: "operator.user_blocked",
+    })).rejects.toThrow("Invalid audit attribution");
+    expect(await database.db.select().from(auditEvents)).toHaveLength(0);
+
+    await service.record({
+      userId: null,
+      eventType: "auth.login_failed",
+      metadata: { provider: "github" },
+    });
+    expect(await database.db.select().from(auditEvents)).toEqual([
+      expect.objectContaining({
+        userId: null,
+        eventType: "auth.login_failed",
+        metadata: { provider: "github" },
+      }),
+    ]);
+  });
+
   it("keeps an audit write failure out of the caller path", async () => {
     const failures: unknown[] = [];
     const service = createAuditService({

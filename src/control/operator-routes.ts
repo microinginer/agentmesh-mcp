@@ -95,11 +95,19 @@ export function registerOperatorRoutes(
     void invalidRequest(request, reply);
   };
   const readOptions = {
-    preHandler: middleware.requireOperator,
+    preHandler: dependencies.rateLimits === undefined
+      ? middleware.requireOperator
+      : [middleware.requireOperator, dependencies.rateLimits.ownerRead],
     errorHandler: invalidPayload,
   };
   const mutationOptions = {
-    preHandler: [middleware.requireMutation, middleware.requireOperator],
+    preHandler: dependencies.rateLimits === undefined
+      ? [middleware.requireMutation, middleware.requireOperator]
+      : [
+          middleware.requireMutation,
+          middleware.requireOperator,
+          dependencies.rateLimits.ownerMutation,
+        ],
     errorHandler: invalidPayload,
     bodyLimit: 4_096,
   };

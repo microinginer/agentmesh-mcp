@@ -4,6 +4,7 @@ import type { AuditService } from "../audit/service.js";
 import type { WebAuthConfig } from "../config.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { sendWebHttpError } from "../http-errors.js";
+import type { WebRouteRateLimits } from "../rate-limits.js";
 import type { GitHubOAuthClient } from "./github-client.js";
 import type { IdentityService } from "./identity-service.js";
 import { createOAuthService } from "./oauth-service.js";
@@ -29,6 +30,7 @@ export interface WebAuthRouteDependencies {
   identityService: IdentityService;
   sessionService: WebSessionService;
   auditService: AuditService;
+  rateLimits?: WebRouteRateLimits;
   clock?: () => Date;
 }
 
@@ -247,9 +249,19 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
     oauthCookieKey: deriveWebAuthKeys(dependencies.config.authKey).oauthCookieKey,
     ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
   });
+  const rejectedCallback = async (reply: FastifyReply): Promise<FastifyReply> => {
+    await dependencies.auditService.recordBestEffort({
+      userId: null,
+      eventType: "auth.login_failed",
+      metadata: { provider: "github" },
+    });
+    return failure(reply);
+  };
 
   app.get("/auth/github/start", async (request, reply) => {
     reply.header("Cache-Control", noStore);
+    await dependencies.rateLimits?.oauthStart(request, reply);
+    if (reply.sent) return;
     const started = await oauth.start(startReturnTo(request));
     if (started === null) return failure(reply);
     return reply
@@ -265,26 +277,35 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
     const rawCookies = rawCookieFields(request);
     const attemptCookies = cookieCandidates(rawCookies, names.oauth);
     const attempts = await Promise.all(attemptCookies.values.map((value) => oauth.consume(value)));
+    await dependencies.rateLimits?.oauthCallback(request, reply);
+    if (reply.sent) {
+      await dependencies.auditService.recordBestEffort({
+        userId: null,
+        eventType: "auth.login_failed",
+        metadata: { provider: "github" },
+      });
+      return;
+    }
     const attempt = attempts[0];
     if (rawCookies.repeated || attemptCookies.invalid || attemptCookies.values.length !== 1
       || attempt === undefined || attempt === null) {
-      return failure(reply);
+      return rejectedCallback(reply);
     }
     const input = callbackInput(request);
-    if (input === null) return failure(reply);
+    if (input === null) return rejectedCallback(reply);
 
     let currentSession = null;
     const sessionToken = cookieCandidates(rawCookies, names.session);
-    if (sessionToken.invalid || sessionToken.values.length > 1) return failure(reply);
+    if (sessionToken.invalid || sessionToken.values.length > 1) return rejectedCallback(reply);
     if (sessionToken.values.length === 1) {
       const value = sessionToken.values[0];
-      if (value === undefined || !isCanonicalWebCredential(value)) return failure(reply);
+      if (value === undefined || !isCanonicalWebCredential(value)) return rejectedCallback(reply);
       try {
         currentSession = await dependencies.sessionService.authenticate(value);
       } catch {
-        return failure(reply);
+        return rejectedCallback(reply);
       }
-      if (currentSession === null) return failure(reply);
+      if (currentSession === null) return rejectedCallback(reply);
     }
     const completed = await oauth.complete({ ...input, attempt, currentSession });
     if (completed === null) return failure(reply);
@@ -302,7 +323,12 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
     },
   };
 
-  app.get("/api/v1/session", { ...sessionRouteOptions, preHandler: middleware.requireSession }, async (request, reply) => {
+  app.get("/api/v1/session", {
+    ...sessionRouteOptions,
+    preHandler: dependencies.rateLimits === undefined
+      ? middleware.requireSession
+      : [middleware.requireSession, dependencies.rateLimits.ownerRead],
+  }, async (request, reply) => {
     reply.header("Cache-Control", noStore);
     if (request.webSession === null) return;
     try {
@@ -338,7 +364,12 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
     await middleware.requireMutation(request, reply);
   };
 
-  app.delete("/api/v1/session", { ...sessionRouteOptions, preHandler: requireLogoutMutation }, async (request, reply) => {
+  app.delete("/api/v1/session", {
+    ...sessionRouteOptions,
+    preHandler: dependencies.rateLimits === undefined
+      ? requireLogoutMutation
+      : [requireLogoutMutation, dependencies.rateLimits.ownerMutation],
+  }, async (request, reply) => {
     reply.header("Cache-Control", noStore);
     if (request.webSession === null) return;
     try {
