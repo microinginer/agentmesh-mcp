@@ -46,6 +46,13 @@ export interface WebSessionService {
   revokeAllForUser(userId: string): Promise<void>;
 }
 
+export class WebSessionServiceUnavailableError extends Error {
+  constructor() {
+    super("Web session service unavailable");
+    this.name = "WebSessionServiceUnavailableError";
+  }
+}
+
 interface WebSessionServiceDependencies {
   db: AgentMeshDatabase;
   keys: Pick<WebAuthKeys, "sessionDigestKey" | "csrfDigestKey">;
@@ -138,7 +145,11 @@ export function createWebSessionService(dependencies: WebSessionServiceDependenc
     }
     const credential = createSessionCredential(dependencies.keys);
     const absoluteExpiresAt = addMilliseconds(now, ABSOLUTE_LIFETIME_MS);
-    const idleExpiresAt = minimumDate(addMilliseconds(now, IDLE_LIFETIME_MS), absoluteExpiresAt);
+    const requestedIdleExpiry = addMilliseconds(now, IDLE_LIFETIME_MS);
+    if (!isValidDate(absoluteExpiresAt) || !isValidDate(requestedIdleExpiry)) {
+      return null;
+    }
+    const idleExpiresAt = minimumDate(requestedIdleExpiry, absoluteExpiresAt);
 
     return dependencies.db.transaction(async (transaction) => {
       const [user] = await transaction
@@ -242,7 +253,7 @@ export function createWebSessionService(dependencies: WebSessionServiceDependenc
   async function revoke(sessionId: string): Promise<void> {
     const now = cloneDate(clock());
     if (!isValidDate(now)) {
-      return;
+      throw new WebSessionServiceUnavailableError();
     }
     await dependencies.db.transaction(async (transaction) => {
       await transaction.update(webSessions).set({ revokedAt: now }).where(and(
@@ -255,7 +266,7 @@ export function createWebSessionService(dependencies: WebSessionServiceDependenc
   async function revokeAllForUser(userId: string): Promise<void> {
     const now = cloneDate(clock());
     if (!isValidDate(now)) {
-      return;
+      throw new WebSessionServiceUnavailableError();
     }
     await dependencies.db.transaction(async (transaction) => {
       await transaction.update(webSessions).set({ revokedAt: now }).where(and(

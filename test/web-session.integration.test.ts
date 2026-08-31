@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { and, count, eq, isNull } from "drizzle-orm";
+import { request as httpRequest } from "node:http";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { PoolClient } from "pg";
 
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
@@ -17,6 +19,19 @@ const databaseUrl =
 const database = createDatabase(databaseUrl);
 const keys = deriveWebAuthKeys(Buffer.alloc(32, 7));
 const publicOrigin = new URL("https://agentmesh.example");
+const safeErrorMessages = {
+  AUTH_REQUIRED: "Authentication is required",
+  AUTH_UNAVAILABLE: "Authentication is temporarily unavailable",
+  CSRF_FORBIDDEN: "Request validation failed",
+  OPERATOR_FORBIDDEN: "Operator access is required",
+} as const;
+const errorForbiddenText = [
+  "fake-cookie-value",
+  "fake-session-token",
+  "fake-csrf-token",
+  "fake-digest-value",
+  "database-error-cause",
+];
 
 beforeAll(async () => {
   await migrateDatabase(database.db);
@@ -48,15 +63,95 @@ async function seedUser(input: { githubUserId?: string; blockedAt?: Date | null 
   return user;
 }
 
-function expectSafeError(response: { statusCode: number; json(): unknown }, status: number, code: string) {
+function expectSafeError(
+  response: { body: string; statusCode: number; json(): unknown },
+  status: number,
+  code: keyof typeof safeErrorMessages,
+) {
   expect(response.statusCode).toBe(status);
   expect(response.json()).toEqual({
     error: {
       code,
-      message: expect.any(String),
-      request_id: expect.any(String),
+      message: safeErrorMessages[code],
+      request_id: expect.stringMatching(/^req-[a-z0-9]+$/),
     },
   });
+  for (const forbidden of errorForbiddenText) {
+    expect(response.body).not.toContain(forbidden);
+  }
+}
+
+async function waitForDatabaseLock(queryFragment: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const result = await database.pool.query<{ waiting: boolean }>(`
+      SELECT EXISTS (
+        SELECT 1
+          FROM pg_stat_activity
+         WHERE datname = current_database()
+           AND state = 'active'
+           AND wait_event_type = 'Lock'
+           AND query ILIKE $1
+      ) AS waiting
+    `, [`%${queryFragment}%`]);
+    if (result.rows[0]?.waiting) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${queryFragment} to acquire the session lock`);
+}
+
+async function lockSession(sessionId: string): Promise<PoolClient> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query('SELECT id FROM web_sessions WHERE id = $1 FOR UPDATE', [sessionId]);
+    return client;
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
+
+async function releaseSessionLock(client: PoolClient): Promise<void> {
+  try {
+    await client.query("COMMIT");
+  } finally {
+    client.release();
+  }
+}
+
+async function rawHeaderRequest(
+  app: FastifyInstance,
+  method: "GET" | "POST",
+  path: string,
+  headers: readonly string[],
+  body = "",
+): Promise<{ body: string; statusCode: number }> {
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("Loopback listener did not expose a TCP address");
+  }
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = httpRequest({
+        host: "127.0.0.1",
+        port: address.port,
+        method,
+        path,
+        headers: ["Host", "127.0.0.1", ...headers],
+      }, (response) => {
+        let responseBody = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => { responseBody += chunk; });
+        response.on("end", () => resolve({ body: responseBody, statusCode: response.statusCode ?? 0 }));
+      });
+      request.once("error", reject);
+      request.end(body);
+    });
+  } finally {
+    await app.close();
+  }
 }
 
 function createProtectedApp(input: {
@@ -95,10 +190,21 @@ describe("database-backed web sessions", () => {
     expect(stored?.csrfDigest).not.toEqual(Buffer.from(issued.csrfToken, "utf8"));
     expect(stored?.tokenDigest).toEqual(issued.sessionDigest);
     expect(stored?.csrfDigest).toEqual(issued.csrfDigest);
-    expect(JSON.stringify(issued)).not.toContain(issued.sessionToken);
-    expect(JSON.stringify(issued)).not.toContain(issued.csrfToken);
-    expect({ ...issued }).not.toHaveProperty("sessionToken");
-    expect({ ...issued }).not.toHaveProperty("csrfToken");
+    const sensitiveProperties = ["sessionToken", "csrfToken", "sessionDigest", "csrfDigest"] as const;
+    const serialized = JSON.stringify(issued);
+    const spread = { ...issued };
+    const enumerableKeys = Object.keys(issued);
+    const errorText = new Error(serialized).message;
+    const bodyText = JSON.stringify({ issued });
+    for (const property of sensitiveProperties) {
+      const value = issued[property];
+      expect(value).toBeDefined();
+      expect(serialized).not.toContain(Buffer.isBuffer(value) ? value.toString("base64url") : value);
+      expect(spread).not.toHaveProperty(property);
+      expect(enumerableKeys).not.toContain(property);
+      expect(errorText).not.toContain(Buffer.isBuffer(value) ? value.toString("base64url") : value);
+      expect(bodyText).not.toContain(Buffer.isBuffer(value) ? value.toString("base64url") : value);
+    }
   });
 
   it("does not create sessions for missing or blocked users", async () => {
@@ -108,8 +214,10 @@ describe("database-backed web sessions", () => {
 
     await expect(service.issue("00000000-0000-4000-8000-000000000000")).resolves.toBeNull();
     await expect(service.issue(blocked.id)).resolves.toBeNull();
+    const eligible = await seedUser({ githubUserId: "4545" });
     const invalidClock = createTestClock("invalid");
-    await expect(createWebSessionService({ db: database.db, keys, clock: invalidClock.now }).issue(blocked.id)).resolves.toBeNull();
+    await expect(createWebSessionService({ db: database.db, keys, clock: invalidClock.now }).issue(eligible.id)).resolves.toBeNull();
+    await expect(service.issue(eligible.id, new Date(8.64e15))).resolves.toBeNull();
     const [sessions] = await database.db.select({ total: count() }).from(webSessions);
     expect(sessions?.total).toBe(0);
   });
@@ -213,6 +321,67 @@ describe("database-backed web sessions", () => {
     expect(active?.total).toBe(0);
   });
 
+  it("rejects invalid-clock revocation without changing durable session rows", async () => {
+    const user = await seedUser();
+    const validClock = createTestClock("2026-08-01T00:00:00Z");
+    const validService = createWebSessionService({ db: database.db, keys, clock: validClock.now });
+    const single = await validService.issue(user.id);
+    const bulk = await validService.issue(user.id);
+    expect(single).not.toBeNull();
+    expect(bulk).not.toBeNull();
+    if (single === null || bulk === null) return;
+
+    const invalidClock = createTestClock("invalid");
+    const invalidService = createWebSessionService({ db: database.db, keys, clock: invalidClock.now });
+    const singleFailure = await invalidService.revoke(single.sessionId).catch((error: unknown) => error);
+    expect(singleFailure).toMatchObject({
+      name: "WebSessionServiceUnavailableError",
+      message: "Web session service unavailable",
+    });
+    expect(singleFailure).not.toHaveProperty("cause");
+    await expect(invalidService.revokeAllForUser(user.id)).rejects.toThrow("Web session service unavailable");
+    const [active] = await database.db.select({ total: count() }).from(webSessions).where(and(
+      eq(webSessions.userId, user.id),
+      isNull(webSessions.revokedAt),
+    ));
+    expect(active?.total).toBe(2);
+
+    const restarted = createWebSessionService({ db: database.db, keys, clock: validClock.now });
+    await expect(restarted.authenticate(single.sessionToken)).resolves.toMatchObject({ sessionId: single.sessionId });
+    await expect(restarted.authenticate(bulk.sessionToken)).resolves.toMatchObject({ sessionId: bulk.sessionId });
+    await restarted.revoke(single.sessionId);
+    await expect(restarted.authenticate(single.sessionToken)).resolves.toBeNull();
+  });
+
+  it("serializes concurrent exact-five-minute touches and queued revocation before authentication", async () => {
+    const clock = createTestClock("2026-08-01T00:00:00Z");
+    const user = await seedUser();
+    const service = createWebSessionService({ db: database.db, keys, clock: clock.now });
+    const issued = await service.issue(user.id);
+    expect(issued).not.toBeNull();
+    if (issued === null) return;
+
+    clock.set("2026-08-01T00:05:00Z");
+    const touchLock = await lockSession(issued.sessionId);
+    const firstTouch = service.authenticate(issued.sessionToken);
+    await waitForDatabaseLock('from "web_sessions"');
+    const secondTouch = service.authenticate(issued.sessionToken);
+    await releaseSessionLock(touchLock);
+    const [first, second] = await Promise.all([firstTouch, secondTouch]);
+    expect(first?.idleExpiresAt.toISOString()).toBe("2026-08-08T00:05:00.000Z");
+    expect(second?.idleExpiresAt.toISOString()).toBe("2026-08-08T00:05:00.000Z");
+    const [storedTouch] = await database.db.select().from(webSessions).where(eq(webSessions.id, issued.sessionId));
+    expect(storedTouch?.lastSeenAt.toISOString()).toBe("2026-08-01T00:05:00.000Z");
+
+    const revokeLock = await lockSession(issued.sessionId);
+    const queuedRevoke = service.revoke(issued.sessionId);
+    await waitForDatabaseLock('update "web_sessions"');
+    const afterQueuedRevoke = service.authenticate(issued.sessionToken);
+    await releaseSessionLock(revokeLock);
+    await queuedRevoke;
+    await expect(afterQueuedRevoke).resolves.toBeNull();
+  });
+
   it("returns only identity and session snapshots while keeping the CSRF digest private", async () => {
     const user = await seedUser();
     const now = new Date("2026-08-01T00:00:00.000Z");
@@ -231,8 +400,13 @@ describe("database-backed web sessions", () => {
       authenticatedAt: now,
     });
     expect(verifyCsrfToken(issued.csrfToken, authenticated!.csrfDigest, keys.csrfDigestKey)).toBe(true);
-    expect(JSON.stringify(authenticated)).not.toContain(authenticated!.csrfDigest.toString("base64url"));
+    const csrfDigest = authenticated!.csrfDigest;
+    expect(csrfDigest).toBeDefined();
+    expect(JSON.stringify(authenticated)).not.toContain(csrfDigest.toString("base64url"));
     expect({ ...authenticated! }).not.toHaveProperty("csrfDigest");
+    expect(Object.keys(authenticated!)).not.toContain("csrfDigest");
+    expect(new Error(JSON.stringify(authenticated)).message).not.toContain(csrfDigest.toString("base64url"));
+    expect(JSON.stringify({ session: authenticated })).not.toContain(csrfDigest.toString("base64url"));
   });
 });
 
@@ -306,6 +480,44 @@ describe("web session Fastify middleware", () => {
     }
   });
 
+  it("rejects repeated raw Cookie, Origin, and CSRF header fields over a loopback listener", async () => {
+    const user = await seedUser();
+    const service = createWebSessionService({ db: database.db, keys });
+    const issued = await service.issue(user.id);
+    expect(issued).not.toBeNull();
+    if (issued === null) return;
+    const cookie = `agentmesh_session=${issued.sessionToken}`;
+
+    const cookieApp = createProtectedApp({ service });
+    const duplicateCookie = await rawHeaderRequest(cookieApp, "GET", "/session", [
+      "Cookie", cookie,
+      "Cookie", cookie,
+    ]);
+    expectSafeError({ ...duplicateCookie, json: () => JSON.parse(duplicateCookie.body) }, 401, "AUTH_REQUIRED");
+
+    const originApp = createProtectedApp({ service });
+    const duplicateOrigin = await rawHeaderRequest(originApp, "POST", "/mutation", [
+      "Cookie", cookie,
+      "Origin", publicOrigin.origin,
+      "Origin", publicOrigin.origin,
+      "X-CSRF-Token", issued.csrfToken,
+      "Content-Type", "application/json",
+      "Content-Length", "2",
+    ], "{}");
+    expectSafeError({ ...duplicateOrigin, json: () => JSON.parse(duplicateOrigin.body) }, 403, "CSRF_FORBIDDEN");
+
+    const csrfApp = createProtectedApp({ service });
+    const duplicateCsrf = await rawHeaderRequest(csrfApp, "POST", "/mutation", [
+      "Cookie", cookie,
+      "Origin", publicOrigin.origin,
+      "X-CSRF-Token", issued.csrfToken,
+      "X-CSRF-Token", issued.csrfToken,
+      "Content-Type", "application/json",
+      "Content-Length", "2",
+    ], "{}");
+    expectSafeError({ ...duplicateCsrf, json: () => JSON.parse(duplicateCsrf.body) }, 403, "CSRF_FORBIDDEN");
+  });
+
   it("enforces immutable GitHub operator IDs and maps database failures to a safe 503", async () => {
     const operator = await seedUser({ githubUserId: "4242" });
     const nonOperator = await seedUser({ githubUserId: "4343" });
@@ -317,7 +529,7 @@ describe("web session Fastify middleware", () => {
     if (operatorIssued === null || nonOperatorIssued === null) return;
     const app = createProtectedApp({ service, operatorGitHubIds: new Set(["4242"]) });
     const brokenService = {
-      authenticate: async () => { throw new Error("database failure must stay private"); },
+      authenticate: async () => { throw new Error("database-error-cause fake-cookie-value fake-session-token fake-csrf-token fake-digest-value"); },
     } as unknown as WebSessionService;
     const brokenApp = createProtectedApp({ service: brokenService });
     try {
