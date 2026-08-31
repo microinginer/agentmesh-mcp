@@ -58,6 +58,7 @@ export async function startServer(config: AgentMeshConfig): Promise<AgentMeshRun
           ? null
           : { auth: adminAuth, queryService: createAdminQueryService({ db: database.db }) },
       web,
+      webAssetsPath: resolve(process.cwd(), "dist/web"),
     });
     await app.listen({ host: config.host, port: config.port });
 

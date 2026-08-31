@@ -12,7 +12,9 @@
   },
   "packageManager": "pnpm@11.19.0",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "pnpm build:server && pnpm build:web",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:web": "pnpm --dir web build",
     "cli": "tsx src/cli.ts",
     "db:generate": "drizzle-kit generate",
     "lint": "oxlint src test scripts *.ts",
@@ -24,6 +26,7 @@
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
+    "@fastify/static": "10.1.3",
     "@fastify/proxy-addr": "5.1.0",
     "@fastify/rate-limit": "11.2.0",
     "@modelcontextprotocol/fastify": "2.0.0",

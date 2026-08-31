@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -39,7 +40,10 @@ afterAll(async () => {
   await database.pool.end();
 });
 
-function buildAdminApp(queries: AdminQueryService = queryService) {
+function buildAdminApp(
+  queries: AdminQueryService = queryService,
+  webAssetsPath?: string,
+) {
   return buildHttpApp({
     db: database.db,
     signingKey,
@@ -48,6 +52,7 @@ function buildAdminApp(queries: AdminQueryService = queryService) {
     allowedHosts: ["127.0.0.1", "localhost"],
     logger: { write: () => {} },
     admin: { auth: adminAuth, queryService: queries },
+    ...(webAssetsPath === undefined ? {} : { webAssetsPath }),
   } as Parameters<typeof buildHttpApp>[0]);
 }
 
@@ -154,6 +159,22 @@ async function seedFixture() {
 }
 
 describe("authenticated read-only admin HTTP API", () => {
+  it("preserves the legacy admin page when the web build is unavailable", async () => {
+    const app = buildAdminApp(queryService, resolve(process.cwd(), "dist/web-missing-test"));
+    try {
+      const admin = await app.inject({ method: "GET", url: "/admin" });
+      const web = await app.inject({ method: "GET", url: "/" });
+
+      expect(admin.statusCode).toBe(200);
+      expect(admin.body).toContain("AgentMesh administration");
+      expectNoStore(admin);
+      expect(web.statusCode).toBe(503);
+      expect(web.json()).toEqual({ error: "web_assets_unavailable" });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("requires the signed admin cookie and safely manages the local session", async () => {
     const app = buildAdminApp();
     try {

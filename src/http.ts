@@ -1,8 +1,10 @@
 import type { IncomingMessage } from "node:http";
-import { resolve } from "node:path";
+import { statSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 import fastifyCookie from "@fastify/cookie";
 import fastifyRateLimit from "@fastify/rate-limit";
+import fastifyStatic from "@fastify/static";
 import {
   toNodeHandler,
   type NodeIncomingMessageLike,
@@ -13,6 +15,7 @@ import { validateHostHeader, validateOriginHeader } from "@modelcontextprotocol/
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { sql } from "drizzle-orm";
 import Fastify from "fastify";
+import type { FastifyInstance } from "fastify";
 
 import { registerControlRoutes } from "./control/routes.js";
 import { registerOperatorRoutes } from "./control/operator-routes.js";
@@ -55,6 +58,7 @@ export interface HttpAppDependencies {
   rateLimits?: RateLimitConfig;
   rateLimitStore?: RateLimitStoreConstructor;
   readinessCheck?: () => Promise<boolean>;
+  webAssetsPath?: string | null;
 }
 
 type AuthenticatedIncomingMessage = IncomingMessage & { auth?: AuthInfo };
@@ -68,6 +72,10 @@ function bearerFromHeader(header: string | undefined): string | null {
 }
 
 const API_CONTENT_SECURITY_POLICY = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
+const WEB_CONTENT_SECURITY_POLICY =
+  "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+  + "img-src 'self' data: https://avatars.githubusercontent.com https://github.com; "
+  + "base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 const HTTP_MAX_HEADER_SIZE = 16_384;
 const READINESS_QUERY_TIMEOUT_MS = 750;
 const READINESS_TOTAL_TIMEOUT_MS = 1_500;
@@ -139,6 +147,88 @@ function applySecurityHeaders(reply: { header(name: string, value: string): unkn
   reply.header("X-Content-Type-Options", "nosniff");
   reply.header("Referrer-Policy", "no-referrer");
   reply.header("Content-Security-Policy", API_CONTENT_SECURITY_POLICY);
+}
+
+function applyWebSecurityHeaders(reply: { header(name: string, value: string): unknown }): void {
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("Referrer-Policy", "no-referrer");
+  reply.header("Content-Security-Policy", WEB_CONTENT_SECURITY_POLICY);
+}
+
+function isSafeSpaPath(rawUrl: string | undefined): boolean {
+  const rawPath = (rawUrl ?? "").split("?", 1)[0] ?? "";
+  if (/%(?:2e|2f|5c)/i.test(rawPath) || rawPath.includes("\\")) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawPath);
+  } catch {
+    return false;
+  }
+  if (decoded.split("/").some((segment) => segment.startsWith("."))) return false;
+  return decoded === "/"
+    || decoded === "/app"
+    || decoded.startsWith("/app/")
+    || decoded === "/ops"
+    || decoded.startsWith("/ops/");
+}
+
+function isHashedWebAsset(pathName: string): boolean {
+  const normalized = pathName.startsWith("/") ? pathName.slice(1) : pathName;
+  return !normalized.includes("/")
+    && !normalized.endsWith(".map")
+    && /^[^.][^/]*-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/.test(normalized);
+}
+
+function webBuildAvailable(webAssetsPath: string): boolean {
+  try {
+    return statSync(join(webAssetsPath, "index.html")).isFile()
+      && statSync(join(webAssetsPath, "assets")).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function registerWebProductRoutes(app: FastifyInstance, webAssetsPath: string): void {
+  const spaPaths = ["/", "/app", "/app/*", "/ops", "/ops/*"];
+
+  if (!webBuildAvailable(webAssetsPath)) {
+    for (const path of spaPaths) {
+      app.get(path, (_request, reply) => reply.code(503).send({ error: "web_assets_unavailable" }));
+    }
+    return;
+  }
+
+  app.register(fastifyStatic, {
+    root: webAssetsPath,
+    serve: false,
+  });
+  app.register(fastifyStatic, {
+    root: join(webAssetsPath, "assets"),
+    prefix: "/assets/",
+    decorateReply: false,
+    index: false,
+    dotfiles: "ignore",
+    cacheControl: false,
+    allowedPath: (pathName) => isHashedWebAsset(pathName),
+    setHeaders: (reply) => {
+      applyWebSecurityHeaders(reply);
+      reply.header("Cache-Control", "public, max-age=31536000, immutable");
+    },
+  });
+
+  for (const path of spaPaths) {
+    app.get(path, (request, reply) => {
+      if (!isSafeSpaPath(request.raw.url)) return reply.callNotFound();
+      applyWebSecurityHeaders(reply);
+      reply.header("Cache-Control", "no-cache");
+      return reply.sendFile("index.html", webAssetsPath, {
+        cacheControl: false,
+        dotfiles: "ignore",
+        immutable: false,
+        maxAge: 0,
+      });
+    });
+  }
 }
 
 function exceedsHttpHeaderAdmission(request: { raw: { rawHeaders: string[]; url?: string | undefined } }): boolean {
@@ -226,6 +316,10 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
       ? reply.send({ status: "ready" })
       : reply.code(503).send({ status: "unavailable" });
   });
+
+  if (dependencies.webAssetsPath !== undefined && dependencies.webAssetsPath !== null) {
+    registerWebProductRoutes(app, dependencies.webAssetsPath);
+  }
 
   registerAdminRoutes(app, dependencies.admin);
   app.register(async (protectedApp) => {

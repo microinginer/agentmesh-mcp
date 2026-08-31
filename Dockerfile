@@ -4,13 +4,15 @@ WORKDIR /app
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY web/package.json ./web/package.json
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 COPY drizzle ./drizzle
+COPY web ./web
 RUN pnpm build
-RUN pnpm prune --prod
+RUN CI=true pnpm prune --prod
 
 FROM node:24-alpine AS runtime
 
