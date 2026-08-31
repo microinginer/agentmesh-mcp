@@ -7,7 +7,7 @@ import {
   LinkIcon,
   MessageCircleIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import {
@@ -61,8 +61,11 @@ export function ProjectOverviewPage() {
   const { api } = useSession();
   const [data, setData] = useState<OverviewData | null>(null);
   const [failed, setFailed] = useState(false);
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    setData(null);
     setFailed(false);
     try {
       const [overview, agents, events, connections] = await Promise.all([
@@ -71,6 +74,7 @@ export function ProjectOverviewPage() {
         api.query(`/api/v1/projects/${projectId}/events?limit=20`, eventListResponseSchema),
         api.query(`/api/v1/projects/${projectId}/connections?limit=50`, connectionListResponseSchema),
       ]);
+      if (generation !== loadGeneration.current) return;
       setData({
         overview: overview.overview,
         agents: agents.items,
@@ -78,11 +82,15 @@ export function ProjectOverviewPage() {
         connections: connections.connections,
       });
     } catch {
+      if (generation !== loadGeneration.current) return;
       setFailed(true);
     }
   }, [api, projectId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
 
   if (data === null && !failed) {
     return (
@@ -123,7 +131,7 @@ export function ProjectOverviewPage() {
             <p>Coordinate agents without stepping on each other.</p>
           </div>
           <Button asChild size="lg">
-            <Link to={`/app/projects/${projectId}/connections`} state={{ createConnection: true }}>
+            <Link to={`/app/projects/${projectId}/connections`}>
               <span aria-hidden="true">＋</span> New connection
             </Link>
           </Button>

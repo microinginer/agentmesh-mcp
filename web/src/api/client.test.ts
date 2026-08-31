@@ -59,6 +59,7 @@ describe("same-origin AgentMesh API client", () => {
       "/api/v1/../auth/github/start",
       "/api/v1/%2e%2e/auth/github/start",
       "/api/v1/projects%2f..%2fauth",
+      "/api/v2/projects/extra",
     ]) {
       await expect(client.query(path)).rejects.toMatchObject({ code: "INVALID_PATH" });
     }
@@ -67,5 +68,23 @@ describe("same-origin AgentMesh API client", () => {
       expect(String(error)).not.toContain(secret);
       return true;
     });
+  });
+
+  it("allows only the versioned project-list endpoint outside v1", async () => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json({
+      projects: [],
+      active_count: 0,
+      project_limit: 5,
+      default_project: null,
+      next_cursor: null,
+    }));
+    const client = new ApiClient(fetcher);
+
+    await client.query("/api/v2/projects?limit=50");
+
+    expect(fetcher).toHaveBeenCalledWith("/api/v2/projects?limit=50", expect.objectContaining({
+      credentials: "same-origin",
+      method: "GET",
+    }));
   });
 });

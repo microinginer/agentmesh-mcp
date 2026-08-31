@@ -27,8 +27,9 @@ export class ApiError extends Error {
 function ensureApiPath(path: string): void {
   const rawPath = path.split("?", 1)[0] ?? "";
   const hasTraversalSegment = rawPath.split("/").some((segment) => segment === "." || segment === "..");
+  const allowedPath = path.startsWith("/api/v1/") || rawPath === "/api/v2/projects";
   if (
-    !path.startsWith("/api/v1/")
+    !allowedPath
     || path.startsWith("//")
     || path.includes("\\")
     || path.includes("#")

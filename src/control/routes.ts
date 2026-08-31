@@ -97,14 +97,32 @@ function singleRawHeader(request: FastifyRequest, name: string, maximumLength: n
   return typeof value === "string" && value.length > 0 && value.length <= maximumLength ? value : null;
 }
 
+function parseProjectListQuery(query: unknown): { limit: number; cursor?: string } | null {
+  if (query === null || typeof query !== "object" || Array.isArray(query)) return null;
+  const entries = Object.entries(query);
+  if (entries.length === 0) return { limit: projectListQuerySchema.parse({}).limit };
+  const raw = Object.fromEntries(entries.map(([key, value]) => [
+    key,
+    key === "limit" && typeof value === "string" && /^[1-9][0-9]{0,2}$/.test(value)
+      ? Number(value)
+      : value,
+  ]));
+  const parsed = projectListQuerySchema.safeParse(raw);
+  if (!parsed.success) return null;
+  return {
+    limit: parsed.data.limit,
+    ...(parsed.data.cursor === undefined ? {} : { cursor: parsed.data.cursor }),
+  };
+}
+
 function parseListQuery(query: unknown): { limit: number } | null {
   if (query === null || typeof query !== "object" || Array.isArray(query)) return null;
   const entries = Object.entries(query);
-  if (entries.length === 0) return projectListQuerySchema.parse({});
+  if (entries.length === 0) return connectionListQuerySchema.parse({});
   if (entries.length !== 1 || entries[0]?.[0] !== "limit") return null;
   const value = entries[0]?.[1];
   if (typeof value !== "string" || !/^[1-9][0-9]{0,2}$/.test(value)) return null;
-  const parsed = projectListQuerySchema.safeParse({ limit: Number(value) });
+  const parsed = connectionListQuerySchema.safeParse({ limit: Number(value) });
   return parsed.success ? parsed.data : null;
 }
 
@@ -230,14 +248,40 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
 
   app.get("/api/v1/projects", readOptions, async (request, reply) => {
     if (request.webSession === null) return;
-    const query = parseListQuery(request.query);
+    const query = parseProjectListQuery(request.query);
     if (query === null) return invalidRequest(request, reply);
     try {
-      const result = await projectService.list({ ownerUserId: request.webSession.userId, limit: query.limit });
+      const result = await projectService.list({
+        ownerUserId: request.webSession.userId,
+        limit: query.limit,
+        ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      });
       return reply.send({
         projects: result.projects.map(publicProject),
         active_count: result.activeCount,
         project_limit: result.projectLimit,
+      });
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.get("/api/v2/projects", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const query = parseProjectListQuery(request.query);
+    if (query === null) return invalidRequest(request, reply);
+    try {
+      const result = await projectService.list({
+        ownerUserId: request.webSession.userId,
+        limit: query.limit,
+        ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      });
+      return reply.send({
+        projects: result.projects.map(publicProject),
+        active_count: result.activeCount,
+        project_limit: result.projectLimit,
+        default_project: result.defaultProject === null ? null : publicProject(result.defaultProject),
+        next_cursor: result.nextCursor,
       });
     } catch (error) {
       return controlFailure(error, request, reply);

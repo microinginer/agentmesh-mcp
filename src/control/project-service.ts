@@ -1,5 +1,6 @@
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, lt, or, sql } from "drizzle-orm";
 
+import { decodeAdminCursor, encodeAdminCursor } from "../admin/contracts.js";
 import type { AuditService } from "../audit/service.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { projects, users } from "../db/schema.js";
@@ -114,19 +115,46 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
     }
   }
 
-  async function list(input: { ownerUserId: string; limit: number }) {
+  async function list(input: { ownerUserId: string; limit: number; cursor?: string }) {
     return db.transaction(async (transaction) => {
-      const rows = await transaction.select().from(projects).where(
-        eq(projects.ownerUserId, input.ownerUserId),
-      ).orderBy(desc(projects.createdAt), desc(projects.id)).limit(input.limit);
+      const cursor = input.cursor === undefined ? undefined : decodeAdminCursor(input.cursor);
+      const createdAt = sql<string>`to_char(${projects.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+      const rows = await transaction.select({
+        ...getTableColumns(projects),
+        cursorCreatedAt: createdAt,
+      }).from(projects).where(
+        and(
+          eq(projects.ownerUserId, input.ownerUserId),
+          cursor?.kind === "created"
+            ? or(
+                lt(createdAt, cursor.created_at),
+                and(eq(createdAt, cursor.created_at), lt(projects.id, cursor.id)),
+              )
+            : undefined,
+        ),
+      ).orderBy(desc(projects.createdAt), desc(projects.id)).limit(input.limit + 1);
       const [active] = await transaction.select({ value: count() }).from(projects).where(and(
         eq(projects.ownerUserId, input.ownerUserId),
         eq(projects.status, "active"),
       ));
+      const [defaultActiveProject] = await transaction.select().from(projects).where(and(
+        eq(projects.ownerUserId, input.ownerUserId),
+        eq(projects.status, "active"),
+      )).orderBy(desc(projects.createdAt), desc(projects.id)).limit(1);
+      const page = rows.slice(0, input.limit);
+      const finalProject = page.at(-1);
       return {
-        projects: rows.map(publicProject),
+        projects: page.map(publicProject),
         activeCount: active?.value ?? 0,
         projectLimit,
+        defaultProject: defaultActiveProject === undefined ? null : publicProject(defaultActiveProject),
+        nextCursor: rows.length > input.limit && finalProject !== undefined
+          ? encodeAdminCursor({
+              kind: "created",
+              created_at: finalProject.cursorCreatedAt,
+              id: finalProject.id,
+            })
+          : null,
       };
     });
   }

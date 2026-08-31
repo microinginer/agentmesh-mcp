@@ -1,8 +1,10 @@
 import {
   ActivityIcon,
   BotIcon,
+  CheckIcon,
   ChevronDownIcon,
   FolderKanbanIcon,
+  FolderPlusIcon,
   LayoutDashboardIcon,
   LinkIcon,
   LogOutIcon,
@@ -12,9 +14,10 @@ import {
   SettingsIcon,
   SunIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useCallback, useRef, useState, type ReactNode } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
+import { projectListResponseSchema, type ProjectListResponse } from "@/api/schemas";
 import { useSession } from "@/auth/session-store";
 import { Brand } from "@/components/brand";
 import { useTheme, type ThemePreference } from "@/components/theme-provider";
@@ -41,6 +44,8 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+
+import { ProjectCreateDialog } from "./project-create-dialog";
 
 interface ShellProps {
   children: ReactNode;
@@ -134,13 +139,125 @@ function Navigation({ projectId }: { projectId?: string }) {
   );
 }
 
-function ProjectSwitcher({ projectName = "Projects" }: { projectName?: string }) {
+function projectDestination(pathname: string, projectId: string): string {
+  const match = pathname.match(/^\/app\/projects\/[^/]+(\/(?:agents|messages|activity|connections|settings))?\/?$/);
+  return `/app/projects/${projectId}${match?.[1] ?? ""}`;
+}
+
+function ProjectSwitcher({ projectId, projectName = "Projects" }: { projectId?: string; projectName?: string }) {
+  const { api } = useSession();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [data, setData] = useState<ProjectListResponse | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadGeneration = useRef(0);
+
+  const loadProjects = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    setLoadFailed(false);
+    try {
+      const first = await api.query("/api/v2/projects?limit=50", projectListResponseSchema);
+      if (generation !== loadGeneration.current) return;
+      setData(first);
+      setNextCursor(first.next_cursor);
+    } catch {
+      if (generation !== loadGeneration.current) return;
+      setLoadFailed(true);
+    }
+  }, [api]);
+
+  const loadMoreProjects = useCallback(async () => {
+    if (nextCursor === null || loadingMore) return;
+    setLoadingMore(true);
+    setLoadFailed(false);
+    try {
+      const page = await api.query(
+        `/api/v2/projects?limit=50&cursor=${encodeURIComponent(nextCursor)}`,
+        projectListResponseSchema,
+      );
+      setData((current) => current === null ? page : {
+        ...current,
+        projects: [...current.projects, ...page.projects],
+        next_cursor: page.next_cursor,
+      });
+      setNextCursor(page.next_cursor);
+    } catch {
+      setLoadFailed(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [api, loadingMore, nextCursor]);
+
+  const activeProjects = data?.projects.filter((project) => project.status === "active") ?? [];
+  const archivedProjects = data?.projects.filter((project) => project.status === "archived") ?? [];
+
   return (
-    <Link className="project-switcher" to="/app">
-      <FolderKanbanIcon />
-      <span>{projectName}</span>
-      <ChevronDownIcon />
-    </Link>
+    <>
+      <DropdownMenu onOpenChange={(open) => { if (open && data === null) void loadProjects(); }}>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant="outline" className="project-switcher" aria-label={`Current project: ${projectName}`}>
+            <FolderKanbanIcon />
+            <span>{projectName}</span>
+            <ChevronDownIcon />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="project-switcher-menu">
+          <DropdownMenuItem onSelect={() => setCreateOpen(true)}>
+            <FolderPlusIcon />
+            <span>New project</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {loadFailed ? <DropdownMenuItem disabled>Projects are unavailable</DropdownMenuItem> : null}
+          {!loadFailed && data === null ? <DropdownMenuItem disabled>Loading projects…</DropdownMenuItem> : null}
+          {activeProjects.length === 0 || data === null ? null : (
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="project-switcher-menu__label">Active projects</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={projectId ?? ""}>
+                {activeProjects.map((project) => (
+                  <DropdownMenuRadioItem key={project.id} value={project.id} onSelect={() => navigate(projectDestination(location.pathname, project.id))}>
+                    <FolderKanbanIcon />
+                    <span className="project-switcher-menu__name">{project.name}</span>
+                    {project.id === projectId ? <CheckIcon className="project-switcher-menu__check" aria-hidden="true" /> : null}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuGroup>
+          )}
+          {archivedProjects.length === 0 ? null : (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuLabel className="project-switcher-menu__label">Archived projects</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={projectId ?? ""}>
+                  {archivedProjects.map((project) => (
+                    <DropdownMenuRadioItem key={project.id} value={project.id} onSelect={() => navigate(projectDestination(location.pathname, project.id))}>
+                      <FolderKanbanIcon />
+                      <span className="project-switcher-menu__name">{project.name}</span>
+                      {project.id === projectId ? <CheckIcon className="project-switcher-menu__check" aria-hidden="true" /> : null}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuGroup>
+            </>
+          )}
+          {nextCursor === null ? null : (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem disabled={loadingMore} onSelect={(event) => {
+                event.preventDefault();
+                void loadMoreProjects();
+              }}>
+                {loadingMore ? "Loading more projects…" : "Load more projects"}
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <ProjectCreateDialog open={createOpen} onOpenChange={setCreateOpen} projectList={data} />
+    </>
   );
 }
 
@@ -149,13 +266,13 @@ export function ProjectShell({ children, projectId, projectName }: ShellProps) {
     <div className="workspace-shell">
       <aside className="workspace-rail">
         <Brand linked />
-        <ProjectSwitcher {...(projectName === undefined ? {} : { projectName })} />
+        <ProjectSwitcher {...(projectId === undefined ? {} : { projectId })} {...(projectName === undefined ? {} : { projectName })} />
         <Navigation {...(projectId === undefined ? {} : { projectId })} />
         <div className="workspace-rail__account"><AccountMenu /></div>
       </aside>
       <header className="mobile-header">
         <Brand linked compact />
-        <ProjectSwitcher {...(projectName === undefined ? {} : { projectName })} />
+        <ProjectSwitcher {...(projectId === undefined ? {} : { projectId })} {...(projectName === undefined ? {} : { projectName })} />
         <Sheet>
           <SheetTrigger asChild>
             <Button type="button" variant="outline" size="icon-lg" aria-label="Open navigation">

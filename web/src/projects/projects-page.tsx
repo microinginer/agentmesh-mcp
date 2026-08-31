@@ -33,13 +33,20 @@ export function ProjectsPage() {
   const load = useCallback(async () => {
     setLoadError(false);
     try {
-      setData(await api.query("/api/v1/projects?limit=50", projectListResponseSchema));
+      setData(await api.query("/api/v2/projects?limit=50", projectListResponseSchema));
     } catch {
       setLoadError(true);
     }
   }, [api]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const firstActiveProject = data?.default_project ?? data?.projects.find((item) => item.status === "active") ?? null;
+  useEffect(() => {
+    if (firstActiveProject !== null) {
+      navigate(`/app/projects/${firstActiveProject.id}`, { replace: true });
+    }
+  }, [firstActiveProject, navigate]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -65,7 +72,7 @@ export function ProjectsPage() {
         idempotencyKey: crypto.randomUUID(),
       }, projectResponseSchema);
       if (response === undefined) throw new Error("Missing project response");
-      navigate(`/app/projects/${response.project.id}/connections`, { state: { createConnection: true } });
+      navigate(`/app/projects/${response.project.id}`);
     } catch (error) {
       setSubmitError(errorCopy(error));
     } finally {
@@ -95,6 +102,17 @@ export function ProjectsPage() {
           </EmptyHeader>
           <Button type="button" variant="outline" onClick={() => void load()}>Try again</Button>
         </Empty>
+      </ProjectShell>
+    );
+  }
+
+  if (firstActiveProject !== null) {
+    return (
+      <ProjectShell projectId={firstActiveProject.id} projectName={firstActiveProject.name}>
+        <section className="projects-loading" aria-label="Opening project">
+          <Skeleton className="h-10 w-72" />
+          <Skeleton className="h-48 w-full max-w-2xl" />
+        </section>
       </ProjectShell>
     );
   }

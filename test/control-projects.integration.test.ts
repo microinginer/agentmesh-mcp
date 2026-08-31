@@ -119,6 +119,46 @@ describe("owner project lifecycle service", () => {
     expect(listed.projectLimit).toBe(0);
   });
 
+  it("returns a canonical active project independently of paginated recent projects", async () => {
+    const owner = await createUser("Owner with archive history");
+    const olderActiveId = "00000000-0000-4000-8000-000000000010";
+    const newerArchivedId = "00000000-0000-4000-8000-000000000011";
+    await database.db.insert(projects).values([
+      {
+        id: olderActiveId,
+        ownerUserId: owner.id,
+        name: "Older active",
+        status: "active",
+        createdAt: new Date("2026-08-30T10:00:00.000Z"),
+        updatedAt: new Date("2026-08-30T10:00:00.000Z"),
+      },
+      {
+        id: newerArchivedId,
+        ownerUserId: owner.id,
+        name: "Newer archived",
+        status: "archived",
+        archivedAt: new Date("2026-08-31T10:00:00.000Z"),
+        createdAt: new Date("2026-08-31T10:00:00.000Z"),
+        updatedAt: new Date("2026-08-31T10:00:00.000Z"),
+      },
+    ]);
+    const service = serviceWith({ projectLimit: 5 });
+
+    const first = await service.list({ ownerUserId: owner.id, limit: 1 });
+    expect(first.projects.map((item) => item.id)).toEqual([newerArchivedId]);
+    expect(first.defaultProject?.id).toBe(olderActiveId);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    if (first.nextCursor === null) throw new Error("Expected a second project page");
+
+    const second = await service.list({
+      ownerUserId: owner.id,
+      limit: 1,
+      cursor: first.nextCursor,
+    });
+    expect(second.projects.map((item) => item.id)).toEqual([olderActiveId]);
+    expect(second.nextCursor).toBeNull();
+  });
+
   it("returns an idempotent create before a new limit decision and audits only once", async () => {
     const owner = await createUser("Owner");
     const service = serviceWith({ projectLimit: 1 });
@@ -473,11 +513,24 @@ describe("owner project HTTP routes", () => {
       });
       expect(listed.statusCode).toBe(200);
       expect(listed.headers["cache-control"]).toBe("no-store");
+      expect(Object.keys(listed.json()).toSorted()).toEqual(["active_count", "project_limit", "projects"]);
       expect(() => projectListResponseSchema.parse(listed.json())).not.toThrow();
       expect(listed.json()).toMatchObject({
         projects: [{ id: projectId, status: "active" }],
         active_count: 1,
         project_limit: 5,
+      });
+
+      const versionedList = await app.inject({
+        method: "GET",
+        url: "/api/v2/projects?limit=50",
+        headers: { cookie: ownerA.cookie },
+      });
+      expect(versionedList.statusCode).toBe(200);
+      expect(() => projectListResponseSchema.parse(versionedList.json())).not.toThrow();
+      expect(versionedList.json()).toMatchObject({
+        default_project: { id: projectId },
+        next_cursor: null,
       });
 
       const archived = await app.inject({
