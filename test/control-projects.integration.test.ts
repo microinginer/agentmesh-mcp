@@ -119,6 +119,46 @@ describe("owner project lifecycle service", () => {
     expect(listed.projectLimit).toBe(0);
   });
 
+  it("returns a canonical active project independently of paginated recent projects", async () => {
+    const owner = await createUser("Owner with archive history");
+    const olderActiveId = "00000000-0000-4000-8000-000000000010";
+    const newerArchivedId = "00000000-0000-4000-8000-000000000011";
+    await database.db.insert(projects).values([
+      {
+        id: olderActiveId,
+        ownerUserId: owner.id,
+        name: "Older active",
+        status: "active",
+        createdAt: new Date("2026-08-30T10:00:00.000Z"),
+        updatedAt: new Date("2026-08-30T10:00:00.000Z"),
+      },
+      {
+        id: newerArchivedId,
+        ownerUserId: owner.id,
+        name: "Newer archived",
+        status: "archived",
+        archivedAt: new Date("2026-08-31T10:00:00.000Z"),
+        createdAt: new Date("2026-08-31T10:00:00.000Z"),
+        updatedAt: new Date("2026-08-31T10:00:00.000Z"),
+      },
+    ]);
+    const service = serviceWith({ projectLimit: 5 });
+
+    const first = await service.list({ ownerUserId: owner.id, limit: 1 });
+    expect(first.projects.map((item) => item.id)).toEqual([newerArchivedId]);
+    expect(first.defaultProject?.id).toBe(olderActiveId);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    if (first.nextCursor === null) throw new Error("Expected a second project page");
+
+    const second = await service.list({
+      ownerUserId: owner.id,
+      limit: 1,
+      cursor: first.nextCursor,
+    });
+    expect(second.projects.map((item) => item.id)).toEqual([olderActiveId]);
+    expect(second.nextCursor).toBeNull();
+  });
+
   it("returns an idempotent create before a new limit decision and audits only once", async () => {
     const owner = await createUser("Owner");
     const service = serviceWith({ projectLimit: 1 });

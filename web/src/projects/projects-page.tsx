@@ -41,7 +41,7 @@ export function ProjectsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const firstActiveProject = data?.projects.find((item) => item.status === "active") ?? null;
+  const firstActiveProject = data?.default_project ?? data?.projects.find((item) => item.status === "active") ?? null;
   useEffect(() => {
     if (firstActiveProject !== null) {
       navigate(`/app/projects/${firstActiveProject.id}`, { replace: true });

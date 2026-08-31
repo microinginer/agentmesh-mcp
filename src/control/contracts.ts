@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { adminListQuerySchema } from "../admin/contracts.js";
 import { uuidV4Schema } from "../contracts.js";
 
 export const projectNameSchema = z.string().max(100).transform((value) => value.trim()).pipe(
@@ -31,9 +32,7 @@ export const operatorUserPathSchema = z.object({
 
 export const projectIdempotencyKeySchema = uuidV4Schema;
 
-export const projectListQuerySchema = z.object({
-  limit: z.number().int().min(1).max(100).default(50),
-}).strict();
+export const projectListQuerySchema = adminListQuerySchema;
 
 export const connectionLabelSchema = z.string().max(80).transform((value) => value.trim()).pipe(
   z.string().min(1).max(80),

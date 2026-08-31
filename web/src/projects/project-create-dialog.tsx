@@ -46,9 +46,12 @@ export function ProjectCreateDialog({ open, onOpenChange, projectList }: Project
     if (open) return;
     formRef.current?.reset();
     setSubmitError(null);
-    setPending(false);
-    submitting.current = false;
   }, [open]);
+
+  const changeOpen = (nextOpen: boolean) => {
+    if (!nextOpen && submitting.current) return;
+    onOpenChange(nextOpen);
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -70,6 +73,8 @@ export function ProjectCreateDialog({ open, onOpenChange, projectList }: Project
         idempotencyKey: crypto.randomUUID(),
       }, projectResponseSchema);
       if (response === undefined) throw new Error("Missing project response");
+      submitting.current = false;
+      setPending(false);
       onOpenChange(false);
       navigate(`/app/projects/${response.project.id}`);
     } catch (error) {
@@ -81,8 +86,8 @@ export function ProjectCreateDialog({ open, onOpenChange, projectList }: Project
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="project-create-dialog">
+    <Dialog open={open} onOpenChange={changeOpen}>
+      <DialogContent className="project-create-dialog" showCloseButton={!pending}>
         <DialogHeader>
           <DialogTitle>New project</DialogTitle>
           <DialogDescription>Create a shared workspace for agents working on the same codebase.</DialogDescription>
@@ -112,7 +117,7 @@ export function ProjectCreateDialog({ open, onOpenChange, projectList }: Project
               ? `${projectList.active_count} active projects · Unlimited`
               : `${projectList.active_count} of ${projectList.project_limit} active projects`}</p>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="button" variant="outline" disabled={pending} onClick={() => changeOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={pending || atLimit || projectList === null}>
               {pending ? "Creating project…" : "Create project"}
             </Button>

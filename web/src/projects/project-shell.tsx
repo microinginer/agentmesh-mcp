@@ -14,7 +14,7 @@ import {
   SettingsIcon,
   SunIcon,
 } from "lucide-react";
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { projectListResponseSchema, type ProjectListResponse } from "@/api/schemas";
@@ -151,12 +151,29 @@ function ProjectSwitcher({ projectId, projectName = "Projects" }: { projectId?: 
   const [data, setData] = useState<ProjectListResponse | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const loadGeneration = useRef(0);
 
   const loadProjects = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     setLoadFailed(false);
     try {
-      setData(await api.query("/api/v1/projects?limit=50", projectListResponseSchema));
+      const first = await api.query("/api/v1/projects?limit=50", projectListResponseSchema);
+      const projects = [...first.projects];
+      const seenCursors = new Set<string>();
+      let cursor = first.next_cursor;
+      while (cursor !== null && !seenCursors.has(cursor)) {
+        seenCursors.add(cursor);
+        const page = await api.query(
+          `/api/v1/projects?limit=50&cursor=${encodeURIComponent(cursor)}`,
+          projectListResponseSchema,
+        );
+        projects.push(...page.projects);
+        cursor = page.next_cursor;
+      }
+      if (generation !== loadGeneration.current) return;
+      setData({ ...first, projects, next_cursor: null });
     } catch {
+      if (generation !== loadGeneration.current) return;
       setLoadFailed(true);
     }
   }, [api]);
@@ -185,13 +202,15 @@ function ProjectSwitcher({ projectId, projectName = "Projects" }: { projectId?: 
           {activeProjects.length === 0 || data === null ? null : (
             <DropdownMenuGroup>
               <DropdownMenuLabel className="project-switcher-menu__label">Active projects</DropdownMenuLabel>
-              {activeProjects.map((project) => (
-                <DropdownMenuItem key={project.id} onSelect={() => navigate(projectDestination(location.pathname, project.id))}>
-                  <FolderKanbanIcon />
-                  <span>{project.name}</span>
-                  {project.id === projectId ? <CheckIcon className="project-switcher-menu__check" /> : null}
-                </DropdownMenuItem>
-              ))}
+              <DropdownMenuRadioGroup value={projectId ?? ""}>
+                {activeProjects.map((project) => (
+                  <DropdownMenuRadioItem key={project.id} value={project.id} onSelect={() => navigate(projectDestination(location.pathname, project.id))}>
+                    <FolderKanbanIcon />
+                    <span>{project.name}</span>
+                    {project.id === projectId ? <CheckIcon className="project-switcher-menu__check" aria-hidden="true" /> : null}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
             </DropdownMenuGroup>
           )}
           {archivedProjects.length === 0 ? null : (
@@ -199,12 +218,15 @@ function ProjectSwitcher({ projectId, projectName = "Projects" }: { projectId?: 
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
                 <DropdownMenuLabel className="project-switcher-menu__label">Archived projects</DropdownMenuLabel>
-                {archivedProjects.map((project) => (
-                  <DropdownMenuItem key={project.id} onSelect={() => navigate(`/app/projects/${project.id}/settings`)}>
-                    <FolderKanbanIcon />
-                    <span>{project.name}</span>
-                  </DropdownMenuItem>
-                ))}
+                <DropdownMenuRadioGroup value={projectId ?? ""}>
+                  {archivedProjects.map((project) => (
+                    <DropdownMenuRadioItem key={project.id} value={project.id} onSelect={() => navigate(projectDestination(location.pathname, project.id))}>
+                      <FolderKanbanIcon />
+                      <span>{project.name}</span>
+                      {project.id === projectId ? <CheckIcon className="project-switcher-menu__check" aria-hidden="true" /> : null}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
               </DropdownMenuGroup>
             </>
           )}

@@ -196,22 +196,31 @@ export function ConnectionsPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [connections, setConnections] = useState<Connection[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    setProject(null);
+    setConnections(null);
     setFailed(false);
     try {
       const [projectResult, connectionResult] = await Promise.all([
         api.query(`/api/v1/projects/${projectId}`, projectResponseSchema),
         api.query(`/api/v1/projects/${projectId}/connections?limit=50`, connectionListResponseSchema),
       ]);
+      if (generation !== loadGeneration.current) return;
       setProject(projectResult.project);
       setConnections(connectionResult.connections);
     } catch {
+      if (generation !== loadGeneration.current) return;
       setFailed(true);
     }
   }, [api, projectId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
 
   const issued = (connection: Connection) => {
     setConnections((current) => {

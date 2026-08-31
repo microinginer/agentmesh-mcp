@@ -263,7 +263,7 @@ p { margin: 0; }
 .projects-page__header p { max-width: 34rem; color: var(--muted-foreground); line-height: 1.55; }
 .project-form { display: flex; width: min(100%, 34rem); flex-direction: column; gap: 1.25rem; margin: 0 auto; }
 .project-form textarea { min-height: 6rem; resize: vertical; }
-.project-create-dialog { max-width: min(34rem, calc(100% - 2rem)); }
+.project-create-dialog { max-width: min(34rem, calc(100% - 2rem)); max-height: calc(100svh - 1rem); overflow-y: auto; }
 .project-dialog-form { display: flex; flex-direction: column; gap: 1.25rem; }
 .project-dialog-form textarea { min-height: 6rem; resize: vertical; }
 .project-limit { color: var(--muted-foreground); font-size: 0.78rem; text-align: center; }
