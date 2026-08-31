@@ -1,12 +1,14 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { and, count, eq, isNull } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { request as httpRequest } from "node:http";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { ClientRequest } from "node:http";
-import type { PoolClient } from "pg";
+import { Pool, type PoolClient, type QueryResultRow } from "pg";
 
-import { createDatabase } from "../src/db/client.js";
+import { createDatabase, type AgentMeshDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
+import * as databaseSchema from "../src/db/schema.js";
 import { oauthIdentities, users, webSessions } from "../src/db/schema.js";
 import { createWebAuthMiddleware } from "../src/web-auth/middleware.js";
 import { createWebSessionService, type WebSessionService } from "../src/web-auth/session-service.js";
@@ -34,7 +36,9 @@ const errorForbiddenText = [
   "database-error-cause",
 ];
 const DATABASE_LOCK_TIMEOUT_MS = 2_000;
-const LOOPBACK_REQUEST_TIMEOUT_MS = 1_000;
+const DATABASE_OPERATION_TIMEOUT_MS = 1_000;
+const DATABASE_SETTLEMENT_TIMEOUT_MS = 1_500;
+const LOOPBACK_LIFECYCLE_TIMEOUT_MS = 1_500;
 const MAX_LOOPBACK_RESPONSE_BYTES = 64 * 1_024;
 
 beforeAll(async () => {
@@ -85,10 +89,86 @@ function expectSafeError(
   }
 }
 
-async function waitForDatabaseLocks(queryFragment: string, expectedCount: number): Promise<void> {
+function bounded<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  failureMessage: string,
+  onTimeout?: () => void,
+): Promise<T> {
+  operation.catch(() => undefined);
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new Error(failureMessage));
+    }, timeoutMs);
+    operation.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+interface BoundedConcurrencyDatabase {
+  db: AgentMeshDatabase;
+  pool: Pool;
+  closed: boolean;
+}
+
+function createBoundedConcurrencyDatabase(): BoundedConcurrencyDatabase {
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    max: 4,
+    connectionTimeoutMillis: DATABASE_OPERATION_TIMEOUT_MS,
+    query_timeout: DATABASE_OPERATION_TIMEOUT_MS,
+    statement_timeout: DATABASE_OPERATION_TIMEOUT_MS,
+    lock_timeout: DATABASE_OPERATION_TIMEOUT_MS,
+  });
+  return {
+    pool,
+    db: drizzle({ client: pool, schema: databaseSchema }),
+    closed: false,
+  };
+}
+
+function closeConcurrencyDatabase(databaseConnection: BoundedConcurrencyDatabase): Promise<void> {
+  if (databaseConnection.closed) return Promise.resolve();
+  databaseConnection.closed = true;
+  const closing = databaseConnection.pool.end();
+  return bounded(
+    closing,
+    DATABASE_SETTLEMENT_TIMEOUT_MS,
+    "Timed out closing session test database",
+    () => { databaseConnection.pool.end().catch(() => undefined); },
+  );
+}
+
+async function poolQuery<T extends QueryResultRow>(
+  databaseConnection: BoundedConcurrencyDatabase,
+  text: string,
+  values: unknown[] = [],
+): Promise<{ rows: T[] }> {
+  return bounded(
+    databaseConnection.pool.query<T>(text, values),
+    DATABASE_OPERATION_TIMEOUT_MS,
+    "Session test database operation timed out",
+    () => { databaseConnection.pool.end().catch(() => undefined); },
+  );
+}
+
+async function waitForDatabaseLocks(
+  databaseConnection: BoundedConcurrencyDatabase,
+  queryFragment: string,
+  expectedCount: number,
+): Promise<void> {
   const deadline = Date.now() + DATABASE_LOCK_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const result = await database.pool.query<{ waiting: number }>(`
+    const result = await poolQuery<{ waiting: number }>(databaseConnection, `
       SELECT count(*)::int AS waiting
         FROM pg_stat_activity
        WHERE datname = current_database()
@@ -106,21 +186,67 @@ async function waitForDatabaseLocks(queryFragment: string, expectedCount: number
 interface HeldSessionLock {
   client: PoolClient;
   released: boolean;
+  clientReleased: boolean;
 }
 
-async function lockSession(sessionId: string): Promise<HeldSessionLock> {
-  const client = await database.pool.connect();
+function releaseLockClient(lock: HeldSessionLock, error?: Error): void {
+  if (lock.clientReleased) return;
+  lock.clientReleased = true;
+  lock.client.release(error);
+}
+
+async function acquireLockClient(databaseConnection: BoundedConcurrencyDatabase): Promise<PoolClient> {
+  let timedOut = false;
+  const acquiring = databaseConnection.pool.connect();
+  acquiring.then(
+    (client) => {
+      if (timedOut) client.release(new Error("Timed out acquiring session test database lock"));
+    },
+    () => undefined,
+  );
+  return bounded(
+    acquiring,
+    DATABASE_OPERATION_TIMEOUT_MS,
+    "Timed out acquiring session test database lock",
+    () => {
+      timedOut = true;
+      databaseConnection.pool.end().catch(() => undefined);
+    },
+  );
+}
+
+async function lockSession(
+  databaseConnection: BoundedConcurrencyDatabase,
+  sessionId: string,
+): Promise<HeldSessionLock> {
+  const client = await acquireLockClient(databaseConnection);
+  const lock: HeldSessionLock = { client, released: false, clientReleased: false };
   let began = false;
   try {
-    await client.query("BEGIN");
+    await bounded(
+      client.query("BEGIN"),
+      DATABASE_OPERATION_TIMEOUT_MS,
+      "Session test database operation timed out",
+      () => releaseLockClient(lock, new Error("Session test database operation timed out")),
+    );
     began = true;
-    await client.query('SELECT id FROM web_sessions WHERE id = $1 FOR UPDATE', [sessionId]);
-    return { client, released: false };
+    await bounded(
+      client.query('SELECT id FROM web_sessions WHERE id = $1 FOR UPDATE', [sessionId]),
+      DATABASE_OPERATION_TIMEOUT_MS,
+      "Session test database operation timed out",
+      () => releaseLockClient(lock, new Error("Session test database operation timed out")),
+    );
+    return lock;
   } catch (error) {
-    if (began) {
-      await client.query("ROLLBACK").catch(() => undefined);
+    if (began && !lock.clientReleased) {
+      await bounded(
+        client.query("ROLLBACK"),
+        DATABASE_OPERATION_TIMEOUT_MS,
+        "Session test database operation timed out",
+        () => releaseLockClient(lock, new Error("Session test database operation timed out")),
+      ).catch(() => undefined);
     }
-    client.release();
+    releaseLockClient(lock);
     throw error;
   }
 }
@@ -129,10 +255,33 @@ async function releaseSessionLock(lock: HeldSessionLock): Promise<void> {
   if (lock.released) return;
   lock.released = true;
   try {
-    await lock.client.query("ROLLBACK");
+    await bounded(
+      lock.client.query("ROLLBACK"),
+      DATABASE_OPERATION_TIMEOUT_MS,
+      "Session test database operation timed out",
+      () => releaseLockClient(lock, new Error("Session test database operation timed out")),
+    );
   } finally {
-    lock.client.release();
+    releaseLockClient(lock);
   }
+}
+
+function trackServicePromise<T>(operation: Promise<T>, started: Promise<unknown>[]): Promise<T> {
+  operation.catch(() => undefined);
+  started.push(operation);
+  return operation;
+}
+
+async function settleServicePromises(
+  databaseConnection: BoundedConcurrencyDatabase,
+  started: readonly Promise<unknown>[],
+): Promise<void> {
+  await bounded(
+    Promise.allSettled(started),
+    DATABASE_SETTLEMENT_TIMEOUT_MS,
+    "Timed out settling session test service operations",
+    () => { databaseConnection.pool.end().catch(() => undefined); },
+  );
 }
 
 async function rawHeaderRequest(
@@ -142,15 +291,31 @@ async function rawHeaderRequest(
   headers: readonly string[],
   body = "",
 ): Promise<{ body: string; statusCode: number }> {
+  const deadline = Date.now() + LOOPBACK_LIFECYCLE_TIMEOUT_MS;
+  let request: ClientRequest | null = null;
+  const remaining = () => Math.max(1, deadline - Date.now());
+  const forceClose = () => {
+    if (request !== null && !request.destroyed) request.destroy();
+    app.server.closeAllConnections?.();
+    app.close().catch(() => undefined);
+  };
   try {
-    await app.listen({ host: "127.0.0.1", port: 0 });
+    const listening = app.listen({ host: "127.0.0.1", port: 0 });
+    await bounded(
+      listening,
+      remaining(),
+      "Loopback lifecycle timed out",
+      () => {
+        listening.then(() => forceClose()).catch(() => undefined);
+        forceClose();
+      },
+    );
     const address = app.server.address();
     if (address === null || typeof address === "string") {
       throw new Error("Loopback listener did not expose a TCP address");
     }
-    return await new Promise((resolve, reject) => {
+    const loopbackResponse = new Promise<{ body: string; statusCode: number }>((resolve, reject) => {
       let completed = false;
-      let request: ClientRequest | null = null;
       let timeout: NodeJS.Timeout | undefined;
       const finish = (error?: Error, value?: { body: string; statusCode: number }) => {
         if (completed) return;
@@ -180,11 +345,17 @@ async function rawHeaderRequest(
         response.once("end", () => finish(undefined, { body: responseBody, statusCode: response.statusCode ?? 0 }));
       });
       request.once("error", (error) => finish(error));
-      timeout = setTimeout(() => finish(new Error("Loopback request timed out")), LOOPBACK_REQUEST_TIMEOUT_MS);
+      timeout = setTimeout(() => finish(new Error("Loopback lifecycle timed out")), remaining());
       request.end(body);
     });
+    return await bounded(loopbackResponse, remaining(), "Loopback lifecycle timed out", forceClose);
   } finally {
-    await app.close();
+    await bounded(
+      app.close(),
+      remaining(),
+      "Loopback lifecycle timed out",
+      forceClose,
+    );
   }
 }
 
@@ -390,26 +561,25 @@ describe("database-backed web sessions", () => {
   it("serializes concurrent exact-five-minute touches and queued revocation before authentication", async () => {
     const issueClock = createTestClock("2026-08-01T00:00:00Z");
     const user = await seedUser();
-    const issueService = createWebSessionService({ db: database.db, keys, clock: issueClock.now });
-    const issued = await issueService.issue(user.id);
-    expect(issued).not.toBeNull();
-    if (issued === null) return;
-
-    const clockA = createTestClock("2026-08-01T00:05:00.000Z");
-    const clockB = createTestClock("2026-08-01T00:05:00.001Z");
-    const serviceA = createWebSessionService({ db: database.db, keys, clock: clockA.now });
-    const serviceB = createWebSessionService({ db: database.db, keys, clock: clockB.now });
+    const concurrencyDatabase = createBoundedConcurrencyDatabase();
     const started: Promise<unknown>[] = [];
     let touchLock: HeldSessionLock | null = null;
     let revokeLock: HeldSessionLock | null = null;
     try {
-      touchLock = await lockSession(issued.sessionId);
-      const contenderA = serviceA.authenticate(issued.sessionToken);
-      started.push(contenderA);
-      await waitForDatabaseLocks('from "web_sessions"', 1);
-      const contenderB = serviceB.authenticate(issued.sessionToken);
-      started.push(contenderB);
-      await waitForDatabaseLocks('from "web_sessions"', 2);
+      const issueService = createWebSessionService({ db: concurrencyDatabase.db, keys, clock: issueClock.now });
+      const issued = await issueService.issue(user.id);
+      expect(issued).not.toBeNull();
+      if (issued === null) return;
+
+      const clockA = createTestClock("2026-08-01T00:05:00.000Z");
+      const clockB = createTestClock("2026-08-01T00:05:00.001Z");
+      const serviceA = createWebSessionService({ db: concurrencyDatabase.db, keys, clock: clockA.now });
+      const serviceB = createWebSessionService({ db: concurrencyDatabase.db, keys, clock: clockB.now });
+      touchLock = await lockSession(concurrencyDatabase, issued.sessionId);
+      const contenderA = trackServicePromise(serviceA.authenticate(issued.sessionToken), started);
+      await waitForDatabaseLocks(concurrencyDatabase, 'from "web_sessions"', 1);
+      const contenderB = trackServicePromise(serviceB.authenticate(issued.sessionToken), started);
+      await waitForDatabaseLocks(concurrencyDatabase, 'from "web_sessions"', 2);
       await releaseSessionLock(touchLock);
       touchLock = null;
       const [first, second] = await Promise.all([contenderA, contenderB]);
@@ -419,20 +589,21 @@ describe("database-backed web sessions", () => {
       expect(storedTouch?.lastSeenAt.toISOString()).toBe("2026-08-01T00:05:00.000Z");
       expect(storedTouch?.idleExpiresAt.toISOString()).toBe("2026-08-08T00:05:00.000Z");
 
-      revokeLock = await lockSession(issued.sessionId);
-      const queuedRevoke = serviceA.revoke(issued.sessionId);
-      started.push(queuedRevoke);
-      await waitForDatabaseLocks('update "web_sessions"', 1);
-      const afterQueuedRevoke = serviceB.authenticate(issued.sessionToken);
-      started.push(afterQueuedRevoke);
+      revokeLock = await lockSession(concurrencyDatabase, issued.sessionId);
+      const queuedRevoke = trackServicePromise(serviceA.revoke(issued.sessionId), started);
+      await waitForDatabaseLocks(concurrencyDatabase, 'update "web_sessions"', 1);
+      const afterQueuedRevoke = trackServicePromise(serviceB.authenticate(issued.sessionToken), started);
       await releaseSessionLock(revokeLock);
       revokeLock = null;
       await queuedRevoke;
       await expect(afterQueuedRevoke).resolves.toBeNull();
     } finally {
-      if (touchLock !== null) await releaseSessionLock(touchLock);
-      if (revokeLock !== null) await releaseSessionLock(revokeLock);
-      await Promise.allSettled(started);
+      await Promise.allSettled([
+        touchLock === null ? Promise.resolve() : releaseSessionLock(touchLock),
+        revokeLock === null ? Promise.resolve() : releaseSessionLock(revokeLock),
+        settleServicePromises(concurrencyDatabase, started),
+      ]);
+      await Promise.allSettled([closeConcurrencyDatabase(concurrencyDatabase)]);
     }
   });
 
