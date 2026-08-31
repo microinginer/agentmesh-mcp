@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agentmesh": {
+      "type": "http",
+      "url": "https://agentmesh.uzmedical.org/mcp",
+      "headers": {
+        "Authorization": "Bearer ${AGENTMESH_TOKEN_AGENTMESH_MCP}"
+      }
+    }
+  }
+}
