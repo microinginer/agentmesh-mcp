@@ -199,6 +199,61 @@ describe("hosted control-plane schema", () => {
     expect(JSON.stringify(event?.metadata)).not.toContain("must-not-persist");
   });
 
+  it("derives reserved actor, subject, and bounded request metadata instead of trusting caller metadata", async () => {
+    const [actor, subject] = await database.db.insert(users).values([
+      { displayName: "Audit actor" },
+      { displayName: "Audit subject" },
+    ]).returning();
+    if (actor === undefined || subject === undefined) throw new Error("audit users insert failed");
+    const requestId = "req-operator-123";
+    const plantedSecret = "must-not-persist-reserved-spoof";
+    const service = createAuditService({
+      db: database.db,
+      clock: () => new Date("2026-08-31T12:00:00.000Z"),
+    });
+
+    await service.record({
+      subjectUserId: subject.id,
+      actor: { kind: "user", userId: actor.id },
+      requestId,
+      eventType: "operator.user_blocked",
+      metadata: {
+        project_name: "Safe project",
+        actor_kind: "headless_cli",
+        actor_user_id: plantedSecret,
+        subject_user_id: plantedSecret,
+        request_id: plantedSecret,
+        token: plantedSecret,
+      } as unknown as import("../src/audit/types.js").AuditMetadata,
+    });
+    await service.record({
+      actor: { kind: "headless_cli" },
+      requestId: `unsafe ${plantedSecret} ${"x".repeat(160)}`,
+      eventType: "operator.project_owner_assigned",
+    });
+
+    const events = await database.db.select().from(auditEvents);
+    expect(events).toEqual([
+      expect.objectContaining({
+        userId: subject.id,
+        eventType: "operator.user_blocked",
+        metadata: {
+          project_name: "Safe project",
+          actor_kind: "user",
+          actor_user_id: actor.id,
+          subject_user_id: subject.id,
+          request_id: requestId,
+        },
+      }),
+      expect.objectContaining({
+        userId: null,
+        eventType: "operator.project_owner_assigned",
+        metadata: { actor_kind: "headless_cli" },
+      }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain(plantedSecret);
+  });
+
   it("keeps an audit write failure out of the caller path", async () => {
     const failures: unknown[] = [];
     const service = createAuditService({

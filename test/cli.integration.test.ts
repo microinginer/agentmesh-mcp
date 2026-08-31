@@ -4,9 +4,10 @@ import { and, count, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createAuditService, type AuditService } from "../src/audit/service.js";
+import { createProjectToken } from "../src/auth/project-token.js";
 import { parseCliProjectLimit, runCli } from "../src/cli.js";
-import { createOperatorService } from "../src/control/operator-service.js";
-import { createDatabase } from "../src/db/client.js";
+import { createOperatorService, OperatorControlError } from "../src/control/operator-service.js";
+import { createDatabase, type AgentMeshDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import { auditEvents, oauthIdentities, projectTokens, projects, users } from "../src/db/schema.js";
 import { createProjectService } from "../src/projects/service.js";
@@ -23,6 +24,65 @@ const usage = [
   "Usage: agentmesh project assign-owner --project-id <uuid> --github-user-id <numeric-id>",
   "Usage: agentmesh db observer ensure",
 ];
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+type Outcome<T> =
+  | { status: "fulfilled"; value: T }
+  | { status: "rejected"; reason: unknown };
+
+function capture<T>(promise: Promise<T>): Promise<Outcome<T>> {
+  return promise.then(
+    (value) => ({ status: "fulfilled", value }),
+    (reason: unknown) => ({ status: "rejected", reason }),
+  );
+}
+
+async function within<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function postgresCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object") return undefined;
+  if ("code" in error && typeof error.code === "string") return error.code;
+  return "cause" in error ? postgresCode(error.cause) : undefined;
+}
+
+async function waitForProjectLock(projectId: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const probe = await database.pool.connect();
+    try {
+      await probe.query("BEGIN");
+      try {
+        await probe.query("SELECT id FROM projects WHERE id = $1 FOR UPDATE NOWAIT", [projectId]);
+      } catch (error) {
+        if (postgresCode(error) === "55P03") return;
+        throw error;
+      } finally {
+        await probe.query("ROLLBACK");
+      }
+    } finally {
+      probe.release();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("authentication did not acquire the project lock");
+}
 
 beforeAll(async () => {
   await migrateDatabase(database.db);
@@ -150,6 +210,12 @@ describe("agentmesh project assign-owner CLI", () => {
         userId: owner.id,
         projectId,
         eventType: "operator.project_owner_assigned",
+        metadata: {
+          project_name: "legacy",
+          actor_kind: "headless_cli",
+          subject_user_id: owner.id,
+          request_id: expect.stringMatching(/^[A-Za-z0-9._:-]{1,128}$/),
+        },
       }),
     ]);
   });
@@ -259,6 +325,99 @@ describe("agentmesh project assign-owner CLI", () => {
     expect([ownerA.id, ownerB.id]).toContain(project?.ownerUserId);
     expect(await database.db.select().from(auditEvents).where(eq(auditEvents.projectId, projectId)))
       .toHaveLength(1);
+  });
+
+  it("rechecks a stale ownerless preflight before waiting on an auth-held project lock", async () => {
+    const owner = await githubUser("999");
+    const projectId = randomUUID();
+    const token = createProjectToken();
+    await database.db.insert(projects).values({ id: projectId, name: "stale-preflight" });
+    await database.db.insert(projectTokens).values({
+      id: token.tokenId,
+      projectId,
+      tokenDigest: token.digest,
+    });
+
+    const enteredTransaction = deferred();
+    const resumeTransaction = deferred();
+    const staleDb = {
+      select: database.db.select.bind(database.db),
+      transaction: async (callback: Parameters<AgentMeshDatabase["transaction"]>[0]) => {
+        enteredTransaction.resolve();
+        await resumeTransaction.promise;
+        return database.db.transaction(callback);
+      },
+    } as unknown as AgentMeshDatabase;
+    const staleService = createOperatorService({
+      db: staleDb,
+      audit: createAuditService({ db: database.db, clock: cliClock }),
+      projectLimit: 5,
+      clock: cliClock,
+    });
+    const staleOutcome = capture(staleService.assignOwner({
+      projectId,
+      githubUserId: "999",
+      requestId: randomUUID(),
+    }));
+    const blocker = await database.pool.connect();
+    let blockerOpen = false;
+    let authOutcome: Promise<Outcome<Awaited<ReturnType<typeof projectService.authenticateProject>>>> | undefined;
+
+    try {
+      await within(enteredTransaction.promise, 1_000, "stale preflight gate");
+      await service(5).assignOwner({
+        projectId,
+        githubUserId: "999",
+        requestId: randomUUID(),
+      });
+
+      await blocker.query("BEGIN");
+      blockerOpen = true;
+      await blocker.query("SELECT id FROM project_tokens WHERE id = $1 FOR UPDATE", [token.tokenId]);
+      authOutcome = capture(projectService.authenticateProject(token.token));
+      await waitForProjectLock(projectId);
+
+      resumeTransaction.resolve();
+      const staleBeforeTokenRelease = await Promise.race([
+        staleOutcome.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 200)),
+      ]);
+      await blocker.query("COMMIT");
+      blockerOpen = false;
+
+      const [stale, authenticated] = await within(
+        Promise.all([staleOutcome, authOutcome]),
+        3_000,
+        "stale assignment/auth race cleanup",
+      );
+      expect(stale.status).toBe("rejected");
+      if (stale.status === "rejected") {
+        expect(postgresCode(stale.reason)).not.toBe("40P01");
+        expect(stale.reason).toBeInstanceOf(OperatorControlError);
+        expect(stale.reason).toMatchObject({ code: "PROJECT_NOT_FOUND" });
+      }
+      expect(authenticated).toEqual({
+        status: "fulfilled",
+        value: { projectId, connectionTokenId: token.tokenId },
+      });
+      if (authenticated.status === "rejected") {
+        expect(postgresCode(authenticated.reason)).not.toBe("40P01");
+      }
+      expect(staleBeforeTokenRelease).toBe(true);
+      const [project] = await database.db.select().from(projects).where(eq(projects.id, projectId));
+      expect(project?.ownerUserId).toBe(owner.id);
+      expect(await database.db.select().from(auditEvents).where(eq(auditEvents.projectId, projectId)))
+        .toHaveLength(1);
+    } finally {
+      resumeTransaction.resolve();
+      if (blockerOpen) await blocker.query("ROLLBACK");
+      blocker.release();
+      if (authOutcome !== undefined) {
+        await within(Promise.all([staleOutcome, authOutcome]), 3_000, "race finalizer");
+      } else {
+        await within(staleOutcome, 3_000, "stale assignment finalizer");
+      }
+    }
   });
 
   it("does not count archived assignments and rolls assignment back on audit failure", async () => {

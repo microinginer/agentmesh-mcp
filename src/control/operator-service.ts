@@ -305,7 +305,9 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
         isNull(webSessions.revokedAt),
       ));
       await audit.record({
-        userId: input.targetUserId,
+        subjectUserId: input.targetUserId,
+        actor: { kind: "user", userId: input.operatorUserId },
+        requestId: input.requestId,
         eventType: "operator.user_blocked",
       }, transaction);
       return mutationUser({ ...current, ...updated });
@@ -328,7 +330,9 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
       )).returning({ blockedAt: users.blockedAt, updatedAt: users.updatedAt });
       if (updated === undefined) throw new OperatorControlError("USER_STATE_CONFLICT");
       await audit.record({
-        userId: input.targetUserId,
+        subjectUserId: input.targetUserId,
+        actor: { kind: "user", userId: input.operatorUserId },
+        requestId: input.requestId,
         eventType: "operator.user_unblocked",
       }, transaction);
       return mutationUser({ ...current, ...updated });
@@ -358,7 +362,9 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
         .returning({ id: projects.id, status: projects.status, archivedAt: projects.archivedAt });
       if (updated === undefined) throw new OperatorControlError("PROJECT_STATE_CONFLICT");
       await audit.record({
-        userId: project.ownerUserId,
+        subjectUserId: project.ownerUserId,
+        actor: { kind: "user", userId: input.operatorUserId },
+        requestId: input.requestId,
         projectId: project.id,
         eventType: "operator.project_archived",
         metadata: { project_name: project.name },
@@ -394,6 +400,11 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
       if (destination === undefined) throw new OperatorControlError("USER_NOT_FOUND");
       if (destination.blockedAt !== null) throw new OperatorControlError("USER_BLOCKED");
 
+      const [stillOwnerless] = await transaction.select({ id: projects.id }).from(projects)
+        .where(and(eq(projects.id, input.projectId), isNull(projects.ownerUserId)))
+        .limit(1);
+      if (stillOwnerless === undefined) throw new OperatorControlError("PROJECT_NOT_FOUND");
+
       const [project] = await transaction.select({
         id: projects.id,
         name: projects.name,
@@ -421,7 +432,9 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
         throw new OperatorControlError("PROJECT_NOT_FOUND");
       }
       await audit.record({
-        userId: destination.id,
+        subjectUserId: destination.id,
+        actor: { kind: "headless_cli" },
+        requestId: input.requestId,
         projectId: project.id,
         eventType: "operator.project_owner_assigned",
         metadata: { project_name: project.name },

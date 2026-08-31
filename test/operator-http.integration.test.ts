@@ -351,6 +351,20 @@ describe("metadata-only operator HTTP", () => {
       expect(archived.json()).toMatchObject({
         project: { id: fixture.projectId, status: "archived", archived_at: fixedNow },
       });
+      const [audit] = await database.db.select().from(auditEvents).where(
+        eq(auditEvents.eventType, "operator.project_archived"),
+      );
+      expect(audit).toMatchObject({
+        userId: fixture.target.id,
+        projectId: fixture.projectId,
+        metadata: {
+          project_name: "private-project-name",
+          actor_kind: "user",
+          actor_user_id: fixture.operator.id,
+          subject_user_id: fixture.target.id,
+          request_id: expect.stringMatching(/^[A-Za-z0-9._:-]{1,128}$/),
+        },
+      });
       await expect(fixture.projectService.authenticateProject(fixture.token.token)).rejects.toMatchObject({
         code: "PROJECT_AUTH_INVALID",
       });
@@ -361,6 +375,52 @@ describe("metadata-only operator HTTP", () => {
 });
 
 describe("operator transactional services", () => {
+  it("attributes the same subject to two distinct authenticated operators", async () => {
+    const fixture = await buildOperatorFixture();
+    await fixture.app.close();
+    const secondOperator = await createIdentity({
+      githubId: "9003",
+      login: "second-operator",
+      displayName: "Second operator",
+    });
+    const service = createOperatorService({
+      db: database.db,
+      audit: fixture.audit,
+      projectLimit: 5,
+      clock: fixture.clock.now,
+    });
+    const blockRequestId = randomUUID();
+    const unblockRequestId = randomUUID();
+
+    await service.blockUser({
+      operatorUserId: fixture.operator.id,
+      targetUserId: fixture.target.id,
+      requestId: blockRequestId,
+    });
+    await service.unblockUser({
+      operatorUserId: secondOperator.id,
+      targetUserId: fixture.target.id,
+      requestId: unblockRequestId,
+    });
+
+    const events = await database.db.select().from(auditEvents).where(
+      eq(auditEvents.userId, fixture.target.id),
+    );
+    const byType = Object.fromEntries(events.map((event) => [event.eventType, event]));
+    expect(byType["operator.user_blocked"]?.metadata).toEqual({
+      actor_kind: "user",
+      actor_user_id: fixture.operator.id,
+      subject_user_id: fixture.target.id,
+      request_id: blockRequestId,
+    });
+    expect(byType["operator.user_unblocked"]?.metadata).toEqual({
+      actor_kind: "user",
+      actor_user_id: secondOperator.id,
+      subject_user_id: fixture.target.id,
+      request_id: unblockRequestId,
+    });
+  });
+
   it("rolls back block, session revocation, archive, and audit when auditing fails", async () => {
     const fixture = await buildOperatorFixture();
     await fixture.app.close();

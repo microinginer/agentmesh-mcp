@@ -1,9 +1,11 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool, type PoolClient } from "pg";
 
+import { createAuditService } from "../src/audit/service.js";
 import { createDatabase } from "../src/db/client.js";
+import { auditEvents, users } from "../src/db/schema.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import { ensureObserverRole } from "../src/observer/service.js";
 
@@ -383,6 +385,55 @@ describe("pgAdmin observer database boundary", () => {
     } finally {
       client.release();
       await connection.end();
+    }
+  });
+
+  it("serializes only service-derived audit attribution through the observer view", async () => {
+    const projectId = randomUUID();
+    const requestId = randomUUID();
+    const plantedSecret = "observer-audit-secret-must-not-leak";
+    const [actor, subject] = await database.db.insert(users).values([
+      { displayName: "Observer audit actor" },
+      { displayName: "Observer audit subject" },
+    ]).returning();
+    if (actor === undefined || subject === undefined) throw new Error("audit users insert failed");
+    const service = createAuditService({ db: database.db });
+    const connection = observerPool();
+    try {
+      await service.record({
+        subjectUserId: subject.id,
+        projectId,
+        actor: { kind: "user", userId: actor.id },
+        requestId,
+        eventType: "operator.project_archived",
+        metadata: {
+          actor_user_id: plantedSecret,
+          subject_user_id: plantedSecret,
+          request_id: plantedSecret,
+          token: plantedSecret,
+        } as unknown as import("../src/audit/types.js").AuditMetadata,
+      });
+      const observed = await connection.query<{
+        user_id: string | null;
+        metadata: Record<string, unknown>;
+      }>(
+        "SELECT user_id, metadata FROM observer.audit_events WHERE project_id = $1",
+        [projectId],
+      );
+      expect(observed.rows).toEqual([{
+        user_id: subject.id,
+        metadata: {
+          actor_kind: "user",
+          actor_user_id: actor.id,
+          subject_user_id: subject.id,
+          request_id: requestId,
+        },
+      }]);
+      expect(JSON.stringify(observed.rows)).not.toContain(plantedSecret);
+    } finally {
+      await connection.end();
+      await database.db.delete(auditEvents);
+      await database.db.delete(users);
     }
   });
 

@@ -8,8 +8,16 @@ export const auditEventTypes = [
 
 export type AuditEventType = (typeof auditEventTypes)[number];
 
+export type AuditActor =
+  | { kind: "user"; userId: string }
+  | { kind: "headless_cli" };
+
 export interface AuditMetadata {
   provider?: "github";
   connection_label?: string;
   project_name?: string;
+  actor_kind?: "user" | "headless_cli";
+  actor_user_id?: string;
+  subject_user_id?: string;
+  request_id?: string;
 }
