@@ -274,7 +274,7 @@ never select AgentMesh context in another repository:
 ```toml
 [mcp_servers.agentmesh]
 url = "http://127.0.0.1:3000/mcp"
-bearer_token_env_var = "AGENTMESH_TOKEN_MY_PROJECT"
+bearer_token_env_var = "AGENTMESH_TOKEN_AGENTMESH_MCP"
 ```
 
 Set that environment variable to a separate connection token on each
@@ -293,7 +293,7 @@ credential does not need to be committed:
       "type": "http",
       "url": "${AGENTMESH_URL:-http://127.0.0.1:3000}/mcp",
       "headers": {
-        "Authorization": "Bearer ${AGENTMESH_TOKEN_MY_PROJECT}"
+        "Authorization": "Bearer ${AGENTMESH_TOKEN_AGENTMESH_MCP}"
       }
     }
   }
