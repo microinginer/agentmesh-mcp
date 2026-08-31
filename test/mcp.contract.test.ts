@@ -55,6 +55,10 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
 
     for (const extra of [
       undefined,
+      null,
+      [],
+      "not-an-extra-object",
+      42,
       {},
       { connectionTokenId: "not-a-uuid" },
       { connectionTokenId: [connectionTokenId] },
@@ -64,7 +68,7 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
         token: "validated-project-token",
         clientId: randomUUID(),
         scopes: ["agentmesh"],
-        ...(extra === undefined ? {} : { extra }),
+        ...(extra === undefined ? {} : { extra: extra as Record<string, unknown> }),
       })).toThrow(expect.objectContaining({ code: "PROJECT_AUTH_INVALID" }));
     }
   });

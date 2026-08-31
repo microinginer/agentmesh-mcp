@@ -195,8 +195,6 @@ export function createConnectionService(dependencies: ConnectionServiceDependenc
     ) {
       throw new ConnectionControlError("INVALID_REQUEST");
     }
-    const { now, expiresAt } = nowAndExpiry();
-
     return db.transaction(async (transaction) => {
       const project = await lockOwnedProject(
         transaction,
@@ -206,6 +204,7 @@ export function createConnectionService(dependencies: ConnectionServiceDependenc
       if (project.status !== "active") {
         throw new ConnectionControlError("PROJECT_STATE_CONFLICT");
       }
+      const { now, expiresAt } = nowAndExpiry();
 
       const [existing] = await transaction.select(safeConnectionSelection).from(projectTokens)
         .where(and(
@@ -261,20 +260,26 @@ export function createConnectionService(dependencies: ConnectionServiceDependenc
     const now = clock();
     if (!validDate(now)) throw new ConnectionControlError("CONTROL_UNAVAILABLE");
 
-    const [project] = await db.select({ id: projects.id, blockedAt: users.blockedAt })
+    const rows = await db.select({
+      projectId: projects.id,
+      connection: safeConnectionSelection,
+    })
       .from(projects)
       .innerJoin(users, eq(users.id, projects.ownerUserId))
-      .where(and(eq(projects.id, input.projectId), eq(projects.ownerUserId, input.ownerUserId)))
-      .limit(1);
-    if (project === undefined || project.blockedAt !== null) {
-      throw new ConnectionControlError("PROJECT_NOT_FOUND");
-    }
-
-    const rows = await db.select(safeConnectionSelection).from(projectTokens)
-      .where(eq(projectTokens.projectId, input.projectId))
+      .leftJoin(projectTokens, eq(projectTokens.projectId, projects.id))
+      .where(and(
+        eq(projects.id, input.projectId),
+        eq(projects.ownerUserId, input.ownerUserId),
+        isNull(users.blockedAt),
+      ))
       .orderBy(desc(projectTokens.createdAt), desc(projectTokens.id))
       .limit(input.limit);
-    return rows.map((row) => publicConnection(row, now));
+    if (rows.length === 0) {
+      throw new ConnectionControlError("PROJECT_NOT_FOUND");
+    }
+    return rows.flatMap(({ connection }) => (
+      connection === null ? [] : [publicConnection(connection, now)]
+    ));
   }
 
   async function revoke(input: RevokeConnectionInput): Promise<PublicControlConnection> {
@@ -285,9 +290,6 @@ export function createConnectionService(dependencies: ConnectionServiceDependenc
     ) {
       throw new ConnectionControlError("INVALID_REQUEST");
     }
-    const now = clock();
-    if (!validDate(now)) throw new ConnectionControlError("CONTROL_UNAVAILABLE");
-
     return db.transaction(async (transaction) => {
       await lockOwnedProject(transaction, input.ownerUserId, input.projectId);
       const [connection] = await transaction.select(safeConnectionSelection).from(projectTokens)
@@ -299,6 +301,8 @@ export function createConnectionService(dependencies: ConnectionServiceDependenc
       if (connection.revokedAt !== null) {
         throw new ConnectionControlError("CONNECTION_STATE_CONFLICT");
       }
+      const now = clock();
+      if (!validDate(now)) throw new ConnectionControlError("CONTROL_UNAVAILABLE");
 
       const [revoked] = await transaction.update(projectTokens).set({ revokedAt: now }).where(and(
         eq(projectTokens.projectId, input.projectId),

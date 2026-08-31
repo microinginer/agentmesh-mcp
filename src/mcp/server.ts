@@ -48,7 +48,13 @@ function toolResult(payload: Record<string, unknown>, isError = false): CallTool
 
 export function connectionTokenIdFromAuthInfo(authInfo: AuthInfo | undefined): string {
   const extra = authInfo?.extra;
-  if (extra === undefined || Object.keys(extra).length !== 1) {
+  if (
+    extra === undefined
+    || extra === null
+    || typeof extra !== "object"
+    || Array.isArray(extra)
+    || Object.keys(extra).length !== 1
+  ) {
     throw new AgentMeshError("PROJECT_AUTH_INVALID", "Project authentication failed");
   }
   const parsed = uuidV4Schema.safeParse(extra.connectionTokenId);

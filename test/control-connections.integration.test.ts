@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createAuditService, type AuditService } from "../src/audit/service.js";
 import type { WebAuthConfig } from "../src/config.js";
@@ -132,6 +132,32 @@ async function waitForProjectLockWait(): Promise<void> {
   throw new Error("project authentication did not reach the project lock");
 }
 
+async function waitForConnectionLockWait(): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await database.pool.query<{ waiting: boolean }>(`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND pid <> pg_backend_pid()
+          AND wait_event_type = 'Lock'
+          AND lower(query) LIKE '%from "project_tokens"%'
+          AND lower(query) LIKE '%for update%'
+      ) AS waiting
+    `);
+    if (result.rows[0]?.waiting === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("connection revocation did not reach the connection lock");
+}
+
+function queryText(query: unknown): string | null {
+  if (typeof query === "string") return query;
+  if (query === null || typeof query !== "object") return null;
+  const text = (query as { text?: unknown }).text;
+  return typeof text === "string" ? text : null;
+}
+
 describe("named connection service", () => {
   it("returns exactly one secret under concurrent same-key issue and never repeats or persists it", async () => {
     const owner = await createUser("Owner");
@@ -189,6 +215,81 @@ describe("named connection service", () => {
     const publicSerialization = JSON.stringify({ results, replayWithChangedPolicy, listed, audits });
     expect(publicSerialization).not.toMatch(/tokenDigest|token_digest|secret-[A-Za-z0-9_-]/);
     expect(publicSerialization.split("am_proj_")).toHaveLength(2);
+  });
+
+  it("reads safe connection metadata through one owner-and-block scoped database statement", async () => {
+    const owner = await createUser("Scoped list owner");
+    const active = await createOwnedProject(owner.id);
+    const archivedWithoutConnections = await createOwnedProject(owner.id, "archived");
+    const service = serviceWith();
+    const issued = await service.issue(issueInput(owner.id, active.id));
+    const querySpy = vi.spyOn(database.pool, "query");
+
+    try {
+      await expect(service.list({ ownerUserId: owner.id, projectId: active.id, limit: 50 }))
+        .resolves.toEqual([expect.objectContaining({ id: issued.connectionId })]);
+      await expect(service.list({
+        ownerUserId: owner.id,
+        projectId: archivedWithoutConnections.id,
+        limit: 50,
+      })).resolves.toEqual([]);
+
+      const listStatements = querySpy.mock.calls
+        .map(([query]) => queryText(query))
+        .filter((text): text is string => text !== null && (
+          text.includes('from "projects"') || text.includes('from "project_tokens"')
+        ));
+      expect(listStatements).toHaveLength(2);
+      for (const statement of listStatements) {
+        expect(statement).toContain('from "projects"');
+        expect(statement).toContain('left join "project_tokens"');
+        expect(statement).toMatch(/"projects"\."id" = \$\d+/);
+        expect(statement).toMatch(/"projects"\."owner_user_id" = \$\d+/);
+        expect(statement).toContain('"users"."blocked_at" is null');
+        expect(statement).not.toContain('"project_tokens"."token_digest"');
+      }
+    } finally {
+      querySpy.mockRestore();
+    }
+  });
+
+  it("derives issue timestamps only after acquiring the project lock", async () => {
+    const owner = await createUser("Issue clock owner");
+    const project = await createOwnedProject(owner.id);
+    const blocker = await database.pool.connect();
+    let transactionOpen = true;
+    let currentNow = "2026-08-31T12:00:00.000Z";
+    let issuing: ReturnType<ReturnType<typeof serviceWith>["issue"]> | undefined;
+
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query('SELECT id FROM "projects" WHERE id = $1 FOR UPDATE', [project.id]);
+      issuing = serviceWith({
+        tokenTtlDays: 1,
+        now: () => new Date(currentNow),
+      }).issue(issueInput(owner.id, project.id));
+      await waitForProjectLockWait();
+      currentNow = "2026-09-01T12:00:00.000Z";
+      await blocker.query("COMMIT");
+      transactionOpen = false;
+
+      await expect(issuing).resolves.toMatchObject({
+        createdAt: "2026-09-01T12:00:00.000Z",
+        expiresAt: "2026-09-02T12:00:00.000Z",
+      });
+      const [stored] = await database.db.select({
+        createdAt: projectTokens.createdAt,
+        expiresAt: projectTokens.expiresAt,
+      }).from(projectTokens);
+      expect(stored).toEqual({
+        createdAt: new Date("2026-09-01T12:00:00.000Z"),
+        expiresAt: new Date("2026-09-02T12:00:00.000Z"),
+      });
+    } finally {
+      if (transactionOpen) await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await issuing?.catch(() => undefined);
+    }
   });
 
   it("rolls back token and audit together when audit persistence fails before disclosure", async () => {
@@ -294,6 +395,46 @@ describe("named connection service", () => {
     expect(await database.db.select().from(auditEvents).where(
       eq(auditEvents.eventType, "connection.revoked"),
     )).toHaveLength(1);
+  });
+
+  it("derives the revocation timestamp only after acquiring project and connection locks", async () => {
+    const owner = await createUser("Revoke clock owner");
+    const project = await createOwnedProject(owner.id);
+    const issued = await serviceWith().issue(issueInput(owner.id, project.id));
+    const blocker = await database.pool.connect();
+    let transactionOpen = true;
+    let currentNow = "2026-08-31T12:00:00.000Z";
+    let revoking: ReturnType<ReturnType<typeof serviceWith>["revoke"]> | undefined;
+
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        'SELECT id FROM "project_tokens" WHERE id = $1 FOR UPDATE',
+        [issued.connectionId],
+      );
+      revoking = serviceWith({ now: () => new Date(currentNow) }).revoke({
+        ownerUserId: owner.id,
+        projectId: project.id,
+        connectionId: issued.connectionId,
+        requestId: randomUUID(),
+      });
+      await waitForConnectionLockWait();
+      currentNow = "2026-09-01T12:00:00.000Z";
+      await blocker.query("COMMIT");
+      transactionOpen = false;
+
+      await expect(revoking).resolves.toMatchObject({
+        id: issued.connectionId,
+        revokedAt: "2026-09-01T12:00:00.000Z",
+      });
+      const [stored] = await database.db.select({ revokedAt: projectTokens.revokedAt })
+        .from(projectTokens).where(eq(projectTokens.id, issued.connectionId));
+      expect(stored?.revokedAt).toEqual(new Date("2026-09-01T12:00:00.000Z"));
+    } finally {
+      if (transactionOpen) await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await revoking?.catch(() => undefined);
+    }
   });
 
   it("cannot authenticate after a revoke transaction wins the project-then-token race", async () => {
@@ -617,6 +758,37 @@ describe("connection HTTP routes", () => {
         expect(response.headers["cache-control"]).toBe("no-store");
         expect(response.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
       }
+
+      const duplicateKey = randomUUID();
+      const duplicateHeader = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${project.id}/connections`,
+        headers: {
+          ...mutationHeaders(current),
+          "idempotency-key": [duplicateKey, duplicateKey],
+        },
+        payload: { label: "Main Mac" },
+      });
+      expect(duplicateHeader.statusCode).toBe(400);
+      expect(duplicateHeader.headers["cache-control"]).toBe("no-store");
+      expect(duplicateHeader.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
+
+      const bodyEnvelopeBytes = Buffer.byteLength('{"label":""}');
+      const overLimitBody = `{"label":"${"a".repeat(4_097 - bodyEnvelopeBytes)}"}`;
+      expect(Buffer.byteLength(overLimitBody)).toBe(4_097);
+      const overLimit = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${project.id}/connections`,
+        headers: {
+          ...mutationHeaders(current, randomUUID()),
+          "content-type": "application/json",
+        },
+        payload: overLimitBody,
+      });
+      expect(overLimit.statusCode).toBe(400);
+      expect(overLimit.headers["cache-control"]).toBe("no-store");
+      expect(overLimit.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
+      expect(await database.db.select().from(projectTokens)).toEqual([]);
 
       for (const suffix of ["?limit=0", "?limit=101", "?limit=01", "?limit=x", "?extra=1", "?limit=1&limit=2"]) {
         const response = await app.inject({
