@@ -67,6 +67,7 @@ function bearerFromHeader(header: string | undefined): string | null {
 }
 
 const API_CONTENT_SECURITY_POLICY = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
+const HTTP_MAX_HEADER_SIZE = 16_384;
 const READINESS_QUERY_TIMEOUT_MS = 750;
 const READINESS_TOTAL_TIMEOUT_MS = 1_500;
 
@@ -139,12 +140,34 @@ function applySecurityHeaders(reply: { header(name: string, value: string): unkn
   reply.header("Content-Security-Policy", API_CONTENT_SECURITY_POLICY);
 }
 
+function exceedsHttpHeaderAdmission(request: { raw: { rawHeaders: string[]; url?: string | undefined } }): boolean {
+  const rawHeaders = request.raw.rawHeaders;
+  if (rawHeaders.length % 2 !== 0 || rawHeaders.length >= HTTP_MAX_HEADER_SIZE * 2) return true;
+  let trackedBytes = 0;
+  const track = (value: string): boolean => {
+    const remaining = HTTP_MAX_HEADER_SIZE - trackedBytes;
+    if (value.length >= remaining) return false;
+    trackedBytes += Buffer.byteLength(value, "utf8");
+    return trackedBytes < HTTP_MAX_HEADER_SIZE;
+  };
+  if (!track(request.raw.url ?? "")) return true;
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    const name = rawHeaders[index];
+    const value = rawHeaders[index + 1];
+    if (name === undefined || value === undefined) return true;
+    if (!track(name) || !track(value)) return true;
+  }
+  return false;
+}
+
 export function buildHttpApp(dependencies: HttpAppDependencies) {
   const logger = dependencies.logger ?? createSafeLogger();
   const trustedProxies = dependencies.trustedProxies ?? [];
   const app = Fastify({
+    http: { maxHeaderSize: HTTP_MAX_HEADER_SIZE },
     trustProxy: trustedProxies.length === 0 ? false : trustedProxies,
   });
+  app.server.maxHeadersCount = HTTP_MAX_HEADER_SIZE - 1;
   const mcpHandler = buildMcpHandler({
     db: dependencies.db,
     signingKey: dependencies.signingKey,
@@ -166,6 +189,11 @@ export function buildHttpApp(dependencies: HttpAppDependencies) {
     },
   });
 
+  app.addHook("onRequest", async (request, reply) => {
+    if (!exceedsHttpHeaderAdmission(request)) return;
+    applySecurityHeaders(reply);
+    await reply.code(431).send({ error: "request headers too large" });
+  });
   app.addHook("onRequest", (_request, reply, done) => {
     applySecurityHeaders(reply);
     done();

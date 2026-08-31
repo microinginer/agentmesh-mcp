@@ -80,15 +80,14 @@ function rawCookieFields(request: FastifyRequest): RawCookieFields {
       if (headers[index]?.toLowerCase() === "cookie") {
         count += 1;
         const value = headers[index + 1];
-        if (value === undefined || count > MAX_COOKIE_FIELDS) {
+        if (value === undefined) {
           invalid = true;
           continue;
         }
-        totalLength += value.length;
-        if (value.length === 0 || value.length > MAX_COOKIE_HEADER_LENGTH || totalLength > MAX_COOKIE_HEADER_LENGTH) {
-          invalid = true;
-          continue;
-        }
+        const valueLength = Buffer.byteLength(value, "utf8");
+        totalLength += valueLength;
+        if (count > MAX_COOKIE_FIELDS || valueLength === 0 || valueLength > MAX_COOKIE_HEADER_LENGTH
+          || totalLength > MAX_COOKIE_HEADER_LENGTH) invalid = true;
         fields.push(value);
       }
     }
@@ -96,10 +95,15 @@ function rawCookieFields(request: FastifyRequest): RawCookieFields {
   }
   const value = request.headers.cookie;
   if (value === undefined) return { fields: [], repeated: false, invalid: false };
-  if (typeof value !== "string" || value.length === 0 || value.length > MAX_COOKIE_HEADER_LENGTH) {
+  if (typeof value !== "string") {
     return { fields: [], repeated: false, invalid: true };
   }
-  return { fields: [value], repeated: false, invalid: false };
+  const valueLength = Buffer.byteLength(value, "utf8");
+  return {
+    fields: [value],
+    repeated: false,
+    invalid: valueLength === 0 || valueLength > MAX_COOKIE_HEADER_LENGTH,
+  };
 }
 
 function cookieCandidates(raw: RawCookieFields, name: string): CookieCandidates {
