@@ -227,7 +227,7 @@ type CallbackQueryResult =
 function callbackInput(request: FastifyRequest): CallbackQueryResult {
   const query = strictQuery(request.raw.url ?? "");
   if (query === null) return { ok: false, reason: "query_syntax" };
-  if (Object.keys(query).length !== 2 || typeof query.code !== "string" || typeof query.state !== "string") {
+  if (typeof query.code !== "string" || typeof query.state !== "string") {
     return { ok: false, reason: "query_keys" };
   }
   if (query.code.length === 0 || query.code.length > MAX_CODE_LENGTH) {

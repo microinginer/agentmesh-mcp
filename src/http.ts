@@ -249,6 +249,16 @@ function sendWebUnavailable(reply: FastifyReply): FastifyReply {
 
 function registerWebProductRoutes(app: FastifyInstance, webAssetsPath: string): void {
   const spaPaths = ["/", "/app", "/app/*", "/ops", "/ops/*"];
+  const rootAssets = {
+    "/agentmesh-mark.svg": ["agentmesh-mark.svg", "image/svg+xml"],
+    "/apple-touch-icon.png": ["apple-touch-icon.png", "image/png"],
+    "/favicon-32x32.png": ["favicon-32x32.png", "image/png"],
+    "/favicon.ico": ["favicon.ico", "image/x-icon"],
+    "/favicon.svg": ["favicon.svg", "image/svg+xml"],
+    "/icon-192.png": ["icon-192.png", "image/png"],
+    "/icon-512.png": ["icon-512.png", "image/png"],
+    "/site.webmanifest": ["site.webmanifest", "application/manifest+json"],
+  } as const;
 
   if (!webBuildAvailable(webAssetsPath)) {
     for (const path of spaPaths) {
@@ -282,6 +292,20 @@ function registerWebProductRoutes(app: FastifyInstance, webAssetsPath: string): 
       },
     });
   });
+
+  for (const [route, [fileName, contentType]] of Object.entries(rootAssets)) {
+    app.get(route, async (_request, reply) => {
+      try {
+        const asset = await readFile(join(webAssetsPath, fileName));
+        if (asset.byteLength === 0) return sendWebUnavailable(reply);
+        applyWebSecurityHeaders(reply);
+        reply.header("Cache-Control", "no-cache");
+        return reply.type(contentType).send(asset);
+      } catch {
+        return sendWebUnavailable(reply);
+      }
+    });
+  }
 
   for (const path of spaPaths) {
     app.get(path, async (request, reply) => {

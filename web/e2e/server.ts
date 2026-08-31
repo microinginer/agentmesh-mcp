@@ -102,6 +102,7 @@ app.get("/e2e/github/authorize", async (request, reply) => {
   const callback = new URL(config.callbackUrl);
   callback.searchParams.set("code", fakeCode);
   callback.searchParams.set("state", state);
+  callback.searchParams.set("iss", "https://github.com");
   return reply.redirect(callback.pathname + callback.search);
 });
 

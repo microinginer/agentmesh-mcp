@@ -19,6 +19,8 @@ beforeEach(async () => {
   await writeFile(join(webAssetsPath, "index.html"), indexHtml, "utf8");
   await writeFile(join(webAssetsPath, "assets", "app-a1b2c3d4.js"), "globalThis.__agentmesh = true;", "utf8");
   await writeFile(join(webAssetsPath, "assets", ".hidden-a1b2c3d4.js"), "secret", "utf8");
+  await writeFile(join(webAssetsPath, "favicon.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>", "utf8");
+  await writeFile(join(webAssetsPath, "site.webmanifest"), "{}", "utf8");
 });
 
 afterEach(async () => {
@@ -95,6 +97,26 @@ describe("AgentMesh web static boundary", () => {
       expect(asset.statusCode).toBe(200);
       expect(asset.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
       expect(asset.headers["content-type"]).toContain("javascript");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("serves only named root brand assets with web security headers", async () => {
+    const app = buildApp();
+    try {
+      const icon = await app.inject({ method: "GET", url: "/favicon.svg" });
+      const manifest = await app.inject({ method: "HEAD", url: "/site.webmanifest" });
+      const unlisted = await app.inject({ method: "GET", url: "/robots.txt" });
+
+      expect(icon.statusCode).toBe(200);
+      expect(icon.headers["content-type"]).toContain("image/svg+xml");
+      expect(icon.headers["cache-control"]).toBe("no-cache");
+      expect(icon.headers["content-security-policy"]).toBeDefined();
+      expect(manifest.statusCode).toBe(200);
+      expect(manifest.headers["content-type"]).toContain("application/manifest+json");
+      expect(manifest.body).toBe("");
+      expect(unlisted.statusCode).toBe(404);
     } finally {
       await app.close();
     }

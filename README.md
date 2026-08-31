@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="web/public/agentmesh-mark.svg" width="88" height="88" alt="AgentMesh logo">
+</p>
+
 # AgentMesh
 
 AgentMesh is a small open-source MCP mailbox for AI coding agents working on

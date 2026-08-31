@@ -5,15 +5,11 @@ import { cn } from "@/lib/utils";
 export function MeshMark({ className }: { className?: string }) {
   return (
     <svg className={cn("mesh-mark", className)} viewBox="0 0 36 36" aria-hidden="true">
-      <path d="M7 9.5 18 5l11 5.5v14L18 31 7 25.5Z" />
-      <path d="m7 9.5 11 8.5 11-7.5M7 25.5 18 18l11 6.5M18 5v26" />
-      <circle cx="7" cy="9.5" r="2.3" />
-      <circle cx="18" cy="5" r="2.3" />
-      <circle cx="29" cy="10.5" r="2.3" />
-      <circle cx="18" cy="18" r="2.7" />
-      <circle cx="7" cy="25.5" r="2.3" />
-      <circle cx="18" cy="31" r="2.3" />
-      <circle cx="29" cy="24.5" r="2.3" />
+      <path d="M18 18 8.5 9.5M18 18l9.5-8.5M18 18v11" />
+      <circle cx="8.5" cy="9.5" r="3" />
+      <circle cx="27.5" cy="9.5" r="3" />
+      <circle cx="18" cy="29" r="3" />
+      <circle cx="18" cy="18" r="4" />
     </svg>
   );
 }

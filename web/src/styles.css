@@ -131,8 +131,8 @@ p { margin: 0; }
 
 .brand--compact { font-size: 1.05rem; }
 .mesh-mark { width: 2rem; height: 2rem; overflow: visible; }
-.mesh-mark path { fill: none; stroke: var(--primary); stroke-width: 1.45; opacity: 0.58; }
-.mesh-mark circle { fill: var(--primary); stroke: var(--background); stroke-width: 0.8; }
+.mesh-mark path { fill: none; stroke: var(--primary); stroke-width: 2.1; stroke-linecap: round; opacity: 0.52; }
+.mesh-mark circle { fill: var(--primary); stroke: var(--background); stroke-width: 1.2; }
 
 .landing {
   display: grid;

@@ -2,6 +2,12 @@ import { expect, test } from "@playwright/test";
 
 test("GitHub OAuth creates a real owner session and first project connection", async ({ page }) => {
   await page.goto("/");
+  await expect(page.locator('link[rel="icon"][type="image/svg+xml"]')).toHaveAttribute("href", "/favicon.svg");
+  await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/site.webmanifest");
+  for (const asset of ["/favicon.svg", "/favicon-32x32.png", "/apple-touch-icon.png", "/site.webmanifest"]) {
+    const response = await page.request.get(asset);
+    expect(response.ok(), `${asset} should be publicly available`).toBe(true);
+  }
   await page.getByRole("link", { name: "Continue with GitHub" }).click();
   await expect(page).toHaveURL(/\/app$/);
   await expect(page.getByRole("heading", { name: "Create your first project" })).toBeVisible();

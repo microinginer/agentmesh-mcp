@@ -511,6 +511,25 @@ describe("web OAuth HTTP routes", () => {
     }
   });
 
+  it("accepts one bounded unrecognized OAuth response parameter without reflecting or persisting it", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      const attempt = await start(app);
+      const callback = await app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${attempt.state}&iss=https%3A%2F%2Fgithub.com`,
+        headers: { cookie: attempt.cookie },
+      });
+      expect(callback.headers.location).toBe("/app");
+      expect(github.exchanges).toHaveLength(1);
+      expect(callback.body).not.toContain("github.com");
+      expect(JSON.stringify(await database.db.select().from(auditEvents))).not.toContain("github.com");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("distinguishes a malformed callback cookie from a stale current session without retaining either value", async () => {
     const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
     const malformedCookie = buildWebApp({ github: github.client });
