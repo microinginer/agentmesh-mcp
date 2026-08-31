@@ -1,0 +1,98 @@
+name: agentmesh-production
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: agentmesh
+      POSTGRES_USER: agentmesh
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - agentmesh-postgres:/var/lib/postgresql
+    ports:
+      - 127.0.0.1:55433:5432
+    networks:
+      backend:
+        ipv4_address: 172.31.24.2
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentmesh -d agentmesh"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  app:
+    image: ${AGENTMESH_IMAGE:?AGENTMESH_IMAGE is required}
+    environment:
+      DATABASE_URL: postgres://agentmesh:${POSTGRES_PASSWORD}@postgres:5432/agentmesh
+      AGENT_SESSION_SIGNING_KEY: ${AGENT_SESSION_SIGNING_KEY:?AGENT_SESSION_SIGNING_KEY is required}
+      AGENTMESH_ADMIN_TOKEN: ${AGENTMESH_ADMIN_TOKEN:-}
+      AGENTMESH_ADMIN_COOKIE_SECURE: "1"
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:?GITHUB_OAUTH_CLIENT_ID is required}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:?GITHUB_OAUTH_CLIENT_SECRET is required}
+      GITHUB_OAUTH_CALLBACK_URL: ${GITHUB_OAUTH_CALLBACK_URL:?GITHUB_OAUTH_CALLBACK_URL is required}
+      AGENTMESH_PUBLIC_ORIGIN: ${AGENTMESH_PUBLIC_ORIGIN:?AGENTMESH_PUBLIC_ORIGIN is required}
+      AGENTMESH_WEB_AUTH_KEY: ${AGENTMESH_WEB_AUTH_KEY:?AGENTMESH_WEB_AUTH_KEY is required}
+      AGENTMESH_OPERATOR_GITHUB_IDS: ${AGENTMESH_OPERATOR_GITHUB_IDS:?AGENTMESH_OPERATOR_GITHUB_IDS is required}
+      AGENTMESH_PROJECT_LIMIT: ${AGENTMESH_PROJECT_LIMIT:-5}
+      AGENTMESH_TOKEN_TTL_DAYS: ${AGENTMESH_TOKEN_TTL_DAYS:-90}
+      AGENTMESH_DB_OBSERVER_PASSWORD: ${AGENTMESH_DB_OBSERVER_PASSWORD:?AGENTMESH_DB_OBSERVER_PASSWORD is required}
+      AGENTMESH_TRUSTED_PROXIES: 172.30.24.1
+      HOST: 0.0.0.0
+      PORT: 3000
+      ALLOWED_HOSTS: ${AGENTMESH_ALLOWED_HOSTS:?AGENTMESH_ALLOWED_HOSTS is required}
+      NODE_ENV: production
+    ports:
+      - 127.0.0.1:3100:3000
+    networks:
+      edge:
+        ipv4_address: 172.30.24.2
+      backend:
+        ipv4_address: 172.31.24.3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  edge:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.24.0/24
+          gateway: 172.30.24.1
+  backend:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.24.0/24
+          gateway: 172.31.24.1
+
+volumes:
+  agentmesh-postgres:

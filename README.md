@@ -42,6 +42,41 @@ terminate TLS at a reverse proxy. AgentMesh always adds `127.0.0.1`, `localhost`
 and `[::1]` to that allowlist for its internal Compose healthcheck; other Host
 values remain forbidden.
 
+## Deploy on a shared Docker host
+
+The production example keeps both AgentMesh listeners on loopback so the
+machine's existing reverse proxy remains the only public entry point:
+
+- application: `127.0.0.1:3100`
+- read-only PostgreSQL observer: `127.0.0.1:55433`
+
+Copy `deploy/compose.production.yaml` and the scripts under `deploy/scripts/`
+to `/opt/agentmesh`. Create `/opt/agentmesh/secrets/agentmesh.env` from
+`deploy/env.production.example`, fill every blank value with a distinct secret,
+and set its mode to `0600`. Never copy a development `.env` to a server.
+
+Build or pull the image, resolve it to an immutable `sha256:` image ID, and
+deploy it with rollback protection:
+
+```bash
+docker build -t agentmesh:local .
+image_id=$(docker image inspect agentmesh:local --format '{{.Id}}')
+sudo /opt/agentmesh/scripts/deploy.sh "$image_id"
+```
+
+Merge `deploy/Caddyfile.site` into the host Caddy configuration, validate the
+complete configuration, then reload Caddy. Adapt the hostname when self-hosting
+on another domain. Run and validate a backup before inviting users:
+
+```bash
+sudo /opt/agentmesh/scripts/backup.sh
+sudo /opt/agentmesh/scripts/restore-check.sh
+```
+
+Backups contain user and message data. Store `/var/backups/agentmesh` with the
+same care as the production database and copy it to a separate machine or
+object store for disaster recovery.
+
 `/health` reports process liveness without touching PostgreSQL. `/ready` is the
 container healthcheck and returns success only when PostgreSQL responds and the
 database contains this image's latest migration. A database with newer additive
