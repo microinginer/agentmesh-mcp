@@ -8,7 +8,7 @@ import {
 } from "../admin/contracts.js";
 import type { WebAuthConfig } from "../config.js";
 import type { AgentMeshDatabase } from "../db/client.js";
-import { sendWebHttpError } from "../http-errors.js";
+import { sendInvalidPayloadError, sendWebHttpError } from "../http-errors.js";
 import type { WebRouteRateLimits } from "../rate-limits.js";
 import { createWebAuthMiddleware } from "../web-auth/middleware.js";
 import type { WebSessionService } from "../web-auth/session-service.js";
@@ -212,22 +212,19 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     reply.header("Cache-Control", NO_STORE);
     done();
   };
-  const invalidPayload = (_error: Error, request: FastifyRequest, reply: FastifyReply) => {
-    void invalidRequest(request, reply);
-  };
   const readOptions = {
     onRequest: noStore,
     preHandler: dependencies.rateLimits === undefined
       ? middleware.requireSession
       : [middleware.requireSession, dependencies.rateLimits.ownerRead],
-    errorHandler: invalidPayload,
+    errorHandler: sendInvalidPayloadError,
   };
   const mutationOptions = {
     onRequest: noStore,
     preHandler: dependencies.rateLimits === undefined
       ? middleware.requireMutation
       : [middleware.requireMutation, dependencies.rateLimits.ownerMutation],
-    errorHandler: invalidPayload,
+    errorHandler: sendInvalidPayloadError,
     bodyLimit: 4_096,
   };
 

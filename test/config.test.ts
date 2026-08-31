@@ -35,6 +35,7 @@ describe("runtime configuration", () => {
       host: "127.0.0.1",
       port: 3000,
       allowedHosts: ["127.0.0.1", "localhost", "[::1]"],
+      trustedProxies: [],
     });
     expect(config.signingKey).toEqual(Buffer.alloc(32, 7));
     expect(config.rateLimits).toEqual({
@@ -81,20 +82,38 @@ describe("runtime configuration", () => {
     })).toThrow(`Invalid AgentMesh configuration: ${name}`);
   });
 
-  it("accepts an explicit bind address, port, and host allow-list", () => {
+  it("accepts an explicit bind address, port, host allow-list, and exact trusted proxy ranges", () => {
     const config = loadConfig({
       DATABASE_URL: "postgresql://agentmesh:secret@postgres:5432/agentmesh",
       AGENT_SESSION_SIGNING_KEY: key,
       HOST: "0.0.0.0",
       PORT: "8080",
-      ALLOWED_HOSTS: "agentmesh.example.com,localhost",
+      ALLOWED_HOSTS: "agentmesh.example.com",
+      AGENTMESH_TRUSTED_PROXIES: "172.30.0.2,10.42.0.0/24,2001:db8::1/128",
     });
 
     expect(config).toMatchObject({
       host: "0.0.0.0",
       port: 8080,
-      allowedHosts: ["agentmesh.example.com", "localhost"],
+      allowedHosts: ["agentmesh.example.com", "127.0.0.1", "localhost", "[::1]"],
+      trustedProxies: ["172.30.0.2", "10.42.0.0/24", "2001:db8::1/128"],
     });
+  });
+
+  it.each([
+    "loopback",
+    "0.0.0.0/0",
+    "::/0",
+    "172.30.0.2/33",
+    "2001:db8::1/129",
+    "172.30.0.2,,172.30.0.3",
+    "not-an-address",
+  ])("fails closed for unsafe trusted proxy entry %s", (trustedProxies) => {
+    expect(() => loadConfig({
+      DATABASE_URL: databaseUrl,
+      AGENT_SESSION_SIGNING_KEY: key,
+      AGENTMESH_TRUSTED_PROXIES: trustedProxies,
+    })).toThrow("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
   });
 
   it.each([undefined, ""])("disables the local admin dashboard when its token is absent or empty", (adminToken) => {

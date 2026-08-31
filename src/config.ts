@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { isIP } from "node:net";
 
 import { z } from "zod";
 
@@ -18,6 +19,7 @@ const environmentSchema = z.object({
   HOST: z.string().min(1).default("127.0.0.1"),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   ALLOWED_HOSTS: z.string().optional(),
+  AGENTMESH_TRUSTED_PROXIES: z.string().optional(),
   AGENTMESH_ADMIN_TOKEN: z.string().optional(),
   AGENTMESH_ADMIN_COOKIE_SECURE: z.enum(["0", "1"]).default("0"),
   GITHUB_OAUTH_CLIENT_ID: z.string().optional(),
@@ -89,6 +91,7 @@ export interface AgentMeshConfig {
   host: string;
   port: number;
   allowedHosts: string[];
+  trustedProxies: string[];
   admin: AdminConfig | null;
   web: WebAuthConfig | null;
   rateLimits: RateLimitConfig;
@@ -160,6 +163,33 @@ function parseRateLimit(value: string | undefined, field: string, defaultValue: 
   return isBlank(value) ? defaultValue : parseBoundedInteger(value ?? "", field, 1, 100_000);
 }
 
+function parseTrustedProxies(value: string | undefined): string[] {
+  if (isBlank(value)) return [];
+  const entries = (value ?? "").split(",").map((entry) => entry.trim());
+  if (entries.some((entry) => entry.length === 0)) {
+    throw new Error("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
+  }
+  for (const entry of entries) {
+    const separator = entry.indexOf("/");
+    if (separator !== entry.lastIndexOf("/")) {
+      throw new Error("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
+    }
+    const address = separator === -1 ? entry : entry.slice(0, separator);
+    const version = isIP(address);
+    if (version === 0) {
+      throw new Error("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
+    }
+    if (separator !== -1) {
+      const prefix = entry.slice(separator + 1);
+      const maximum = version === 4 ? 32 : 128;
+      if (!/^\d+$/.test(prefix) || Number(prefix) < 1 || Number(prefix) > maximum) {
+        throw new Error("Invalid AgentMesh configuration: AGENTMESH_TRUSTED_PROXIES");
+      }
+    }
+  }
+  return [...new Set(entries)];
+}
+
 function parseOperatorGitHubIds(value: string): ReadonlySet<string> {
   const ids = value.split(",").map((entry) => entry.trim());
   if (ids.length === 0 || ids.some((id) => !/^[1-9]\d*$/.test(id))) {
@@ -220,15 +250,22 @@ export function loadConfig(environment: Record<string, string | undefined>): Age
     throw new Error("Invalid AgentMesh configuration: AGENT_SESSION_SIGNING_KEY");
   }
 
-  const allowedHosts =
+  const configuredAllowedHosts =
     parsed.data.ALLOWED_HOSTS === undefined
       ? ["127.0.0.1", "localhost", "[::1]"]
       : parsed.data.ALLOWED_HOSTS.split(",")
           .map((host) => host.trim())
           .filter((host) => host.length > 0);
-  if (allowedHosts.length === 0) {
+  if (configuredAllowedHosts.length === 0) {
     throw new Error("Invalid AgentMesh configuration: ALLOWED_HOSTS");
   }
+  const allowedHosts = [...new Set([
+    ...configuredAllowedHosts,
+    "127.0.0.1",
+    "localhost",
+    "[::1]",
+  ])];
+  const trustedProxies = parseTrustedProxies(parsed.data.AGENTMESH_TRUSTED_PROXIES);
 
   const adminToken = parsed.data.AGENTMESH_ADMIN_TOKEN;
   let admin: AdminConfig | null = null;
@@ -280,6 +317,7 @@ export function loadConfig(environment: Record<string, string | undefined>): Age
     host: parsed.data.HOST,
     port: parsed.data.PORT,
     allowedHosts,
+    trustedProxies,
     admin,
     web,
     rateLimits,

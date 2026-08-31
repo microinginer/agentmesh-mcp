@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 
 import fastifyCookie from "@fastify/cookie";
 import fastifyRateLimit from "@fastify/rate-limit";
-import { createMcpFastifyApp } from "@modelcontextprotocol/fastify";
 import {
   toNodeHandler,
   type NodeIncomingMessageLike,
@@ -13,6 +12,7 @@ import type { AuthInfo } from "@modelcontextprotocol/server";
 import { validateHostHeader, validateOriginHeader } from "@modelcontextprotocol/server";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { sql } from "drizzle-orm";
+import Fastify from "fastify";
 
 import { registerControlRoutes } from "./control/routes.js";
 import { registerOperatorRoutes } from "./control/operator-routes.js";
@@ -47,6 +47,7 @@ export interface HttpAppDependencies {
   projectService: Pick<ProjectService, "authenticateProject">;
   host: string;
   allowedHosts: string[];
+  trustedProxies?: string[];
   admin: AdminRouteDependencies | null;
   web?: WebAuthRouteDependencies | null;
   logger?: SafeLogger;
@@ -124,11 +125,9 @@ function applySecurityHeaders(reply: { header(name: string, value: string): unkn
 
 export function buildHttpApp(dependencies: HttpAppDependencies) {
   const logger = dependencies.logger ?? createSafeLogger();
-  // Use the MCP package's Fastify factory without its echoing host/origin hooks;
-  // the equivalent fixed-message validation below preserves the protection
-  // without reflecting hostile header values.
-  const app = createMcpFastifyApp({
-    host: "agentmesh-explicit-validation",
+  const trustedProxies = dependencies.trustedProxies ?? [];
+  const app = Fastify({
+    trustProxy: trustedProxies.length === 0 ? false : trustedProxies,
   });
   const mcpHandler = buildMcpHandler({
     db: dependencies.db,

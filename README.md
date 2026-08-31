@@ -38,7 +38,9 @@ openssl rand -hex 24
 
 Put the first generated value in `AGENT_SESSION_SIGNING_KEY` and the hexadecimal
 value in `POSTGRES_PASSWORD`. Set `ALLOWED_HOSTS` to the public hostname and
-terminate TLS at a reverse proxy.
+terminate TLS at a reverse proxy. AgentMesh always adds `127.0.0.1`, `localhost`,
+and `[::1]` to that allowlist for its internal Compose healthcheck; other Host
+values remain forbidden.
 
 `/health` reports process liveness without touching PostgreSQL. `/ready` is the
 container healthcheck and returns success only when PostgreSQL responds and the
@@ -76,6 +78,16 @@ default. Abuse-control maxima are configurable with
 `AGENTMESH_RATE_LIMIT_OAUTH_START`, `AGENTMESH_RATE_LIMIT_OWNER_READ`,
 `AGENTMESH_RATE_LIMIT_OWNER_MUTATION`,
 `AGENTMESH_RATE_LIMIT_CONNECTION_CREATE`, and `AGENTMESH_RATE_LIMIT_MCP`.
+
+When Caddy is the only ingress, set `AGENTMESH_TRUSTED_PROXIES` to its pinned
+private address, for example `172.30.0.2`, only if the Caddy container really
+uses that exact address. The value is a comma-separated allowlist of exact IPv4
+or IPv6 addresses and positive-prefix CIDRs, such as
+`172.30.0.2,2001:db8:42::2/128`. Names, hop counts, `0.0.0.0/0`, and `::/0` are
+rejected. Leave it blank when there is no proxy. Caddy must overwrite
+`X-Forwarded-For`, share an isolated network with AgentMesh, and be the only
+process that can reach the application listener; forwarding headers from every
+other peer are ignored for OAuth buckets.
 
 Create one named connection token per computer. The complete token is returned
 only by its first successful creation response. Put it in an environment-backed

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { adminListQuerySchema } from "../admin/contracts.js";
-import { sendWebHttpError } from "../http-errors.js";
+import { sendInvalidPayloadError, sendWebHttpError } from "../http-errors.js";
 import { createWebAuthMiddleware } from "../web-auth/middleware.js";
 import {
   operatorUserPathSchema,
@@ -91,14 +91,11 @@ export function registerOperatorRoutes(
     }
     done();
   });
-  const invalidPayload = (_error: Error, request: FastifyRequest, reply: FastifyReply) => {
-    void invalidRequest(request, reply);
-  };
   const readOptions = {
     preHandler: dependencies.rateLimits === undefined
       ? middleware.requireOperator
       : [middleware.requireOperator, dependencies.rateLimits.ownerRead],
-    errorHandler: invalidPayload,
+    errorHandler: sendInvalidPayloadError,
   };
   const mutationOptions = {
     preHandler: dependencies.rateLimits === undefined
@@ -108,7 +105,7 @@ export function registerOperatorRoutes(
           middleware.requireOperator,
           dependencies.rateLimits.ownerMutation,
         ],
-    errorHandler: invalidPayload,
+    errorHandler: sendInvalidPayloadError,
     bodyLimit: 4_096,
   };
 

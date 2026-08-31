@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { RateLimitConfig } from "./config.js";
+import { sendWebHttpError } from "./http-errors.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -23,6 +25,11 @@ export interface WebRouteRateLimits {
 const TEN_MINUTES_MS = 10 * 60 * 1_000;
 const ONE_MINUTE_MS = 60 * 1_000;
 const ONE_HOUR_MS = 60 * 60 * 1_000;
+const MAX_FORWARDED_FOR_LENGTH = 1_024;
+const MAX_FORWARDED_HOPS = 16;
+const INVALID_SOURCE_IDENTITY = Symbol("invalid-source-identity");
+
+type RateLimitIdentity = string | null | typeof INVALID_SOURCE_IDENTITY;
 
 function opaqueKey(group: string, value: string): string {
   const digest = createHash("sha256")
@@ -34,7 +41,36 @@ function opaqueKey(group: string, value: string): string {
   return `${group}:${digest}`;
 }
 
-function byIp(request: FastifyRequest): string {
+function rawForwardedForValues(request: FastifyRequest): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < request.raw.rawHeaders.length; index += 2) {
+    if (request.raw.rawHeaders[index]?.toLowerCase() !== "x-forwarded-for") continue;
+    const value = request.raw.rawHeaders[index + 1];
+    if (value !== undefined) values.push(value);
+  }
+  return values;
+}
+
+function byIp(request: FastifyRequest): RateLimitIdentity {
+  const socketIp = request.raw.socket.remoteAddress;
+  if (socketIp === undefined || isIP(socketIp) === 0) return INVALID_SOURCE_IDENTITY;
+
+  const proxyChain = request.ips;
+  if (proxyChain === undefined || proxyChain.length <= 1) {
+    return socketIp;
+  }
+
+  const forwarded = rawForwardedForValues(request);
+  if (forwarded.length !== 1 || forwarded[0]!.length === 0
+    || forwarded[0]!.length > MAX_FORWARDED_FOR_LENGTH) {
+    return INVALID_SOURCE_IDENTITY;
+  }
+  const hops = forwarded[0]!.split(",").map((entry) => entry.trim());
+  if (hops.length === 0 || hops.length > MAX_FORWARDED_HOPS
+    || hops.some((entry) => entry.length === 0 || isIP(entry) === 0)
+    || isIP(request.ip) === 0) {
+    return INVALID_SOURCE_IDENTITY;
+  }
   return request.ip;
 }
 
@@ -68,18 +104,27 @@ function createGuard(input: {
   group: string;
   max: number;
   timeWindow: number;
-  identity(request: FastifyRequest): string | null;
+  identity(request: FastifyRequest): RateLimitIdentity;
 }): RateLimitGuard {
   const limit = input.app.createRateLimit({
     max: input.max,
     timeWindow: input.timeWindow,
     keyGenerator: (request) => {
       const identity = input.identity(request);
-      return opaqueKey(input.group, identity ?? "missing-authenticated-identity");
+      return opaqueKey(
+        input.group,
+        typeof identity === "string" ? identity : "missing-authenticated-identity",
+      );
     },
   });
   return async (request, reply) => {
-    if (reply.sent || input.identity(request) === null) return;
+    if (reply.sent) return;
+    const identity = input.identity(request);
+    if (identity === INVALID_SOURCE_IDENTITY) {
+      void sendWebHttpError(request, reply, 400, "INVALID_REQUEST");
+      return;
+    }
+    if (identity === null) return;
     let result: Awaited<ReturnType<typeof limit>>;
     try {
       result = await limit(request);

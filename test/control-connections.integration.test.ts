@@ -785,7 +785,7 @@ describe("connection HTTP routes", () => {
         },
         payload: overLimitBody,
       });
-      expect(overLimit.statusCode).toBe(400);
+      expect(overLimit.statusCode).toBe(413);
       expect(overLimit.headers["cache-control"]).toBe("no-store");
       expect(overLimit.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
       expect(await database.db.select().from(projectTokens)).toEqual([]);

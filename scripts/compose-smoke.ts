@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -34,7 +35,8 @@ const childEnvironment = {
   AGENTMESH_DB_OBSERVER_PASSWORD: "",
   AGENT_SESSION_SIGNING_KEY: smokeSigningKey,
   POSTGRES_PASSWORD: smokePostgresPassword,
-  ALLOWED_HOSTS: "localhost,127.0.0.1",
+  ALLOWED_HOSTS: "agentmesh.smoke.invalid",
+  AGENTMESH_TRUSTED_PROXIES: "",
   GITHUB_OAUTH_CLIENT_ID: "",
   GITHUB_OAUTH_CLIENT_SECRET: "",
   GITHUB_OAUTH_CALLBACK_URL: "",
@@ -76,6 +78,34 @@ function execFileText(file: string, args: string[]): Promise<string> {
 
 async function compose(...args: string[]): Promise<string> {
   return execFileText("docker", ["compose", "--env-file", "/dev/null", "-p", composeProject, ...args]);
+}
+
+async function requestStatusWithHost(url: URL, host: string): Promise<number> {
+  try {
+    return await new Promise<number>((resolve, reject) => {
+      let settled = false;
+      let timeout: NodeJS.Timeout | undefined;
+      const finish = (error: Error | null, status?: number) => {
+        if (settled) return;
+        settled = true;
+        if (timeout !== undefined) clearTimeout(timeout);
+        if (error !== null || status === undefined) reject(new Error(SAFE_HTTP_ERROR));
+        else resolve(status);
+      };
+      const request = httpRequest(url, { headers: { host } }, (response) => {
+        response.destroy();
+        finish(null, response.statusCode);
+      });
+      request.once("error", () => finish(new Error(SAFE_HTTP_ERROR)));
+      timeout = setTimeout(() => {
+        request.destroy();
+        finish(new Error(SAFE_HTTP_ERROR));
+      }, 5_000);
+      request.end();
+    });
+  } catch {
+    throw new Error(SAFE_HTTP_ERROR);
+  }
 }
 
 async function waitForReady(): Promise<void> {
@@ -280,6 +310,11 @@ async function main(): Promise<{
     async (response) => response.status,
   );
   assert.equal(headlessAuthStatus, 404, "Hosted OAuth routes must be absent in headless mode");
+  const hostileHostStatus = await requestStatusWithHost(
+    new URL("/ready", endpoint),
+    "hostile.smoke.invalid",
+  );
+  assert.equal(hostileHostStatus, 403, "A hostile public Host must remain forbidden");
   const imageId = (await compose("images", "-q", "agentmesh")).trim();
   assert.match(imageId, /^[a-f0-9:]{12,128}$/i, "Compose did not return the application image ID");
   const imageHistory = await execFileText("docker", ["image", "history", "--no-trunc", imageId]);

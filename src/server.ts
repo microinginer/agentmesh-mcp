@@ -51,6 +51,7 @@ export async function startServer(config: AgentMeshConfig): Promise<AgentMeshRun
       projectService,
       host: config.host,
       allowedHosts: config.allowedHosts,
+      trustedProxies: config.trustedProxies,
       rateLimits: config.rateLimits,
       admin:
         adminAuth === null

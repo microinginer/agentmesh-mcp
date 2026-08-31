@@ -5,10 +5,10 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createAuditService } from "../src/audit/service.js";
-import type { RateLimitConfig, WebAuthConfig } from "../src/config.js";
+import { loadConfig, type RateLimitConfig, type WebAuthConfig } from "../src/config.js";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { oauthIdentities, projects, users } from "../src/db/schema.js";
+import { oauthAttempts, oauthIdentities, projects, users } from "../src/db/schema.js";
 import { buildHttpApp } from "../src/http.js";
 import { createSafeLogger } from "../src/logging.js";
 import { createProjectService } from "../src/projects/service.js";
@@ -77,15 +77,19 @@ class FailingStore {
   }
 }
 
-function webConfig(): WebAuthConfig {
+function webConfig(input: {
+  callbackUrl?: URL;
+  publicOrigin?: URL;
+  secureCookies?: boolean;
+} = {}): WebAuthConfig {
   const config = {
     clientId: "test-client-id",
-    callbackUrl: new URL("http://127.0.0.1/auth/github/callback"),
-    publicOrigin: new URL("http://127.0.0.1"),
+    callbackUrl: input.callbackUrl ?? new URL("http://127.0.0.1/auth/github/callback"),
+    publicOrigin: input.publicOrigin ?? new URL("http://127.0.0.1"),
     operatorGitHubIds: new Set<string>(),
     projectLimit: 5,
     tokenTtlDays: 90,
-    secureCookies: false,
+    secureCookies: input.secureCookies ?? false,
   } as Omit<WebAuthConfig, "clientSecret" | "authKey">;
   Object.defineProperties(config, {
     clientSecret: { value: "test-client-secret", enumerable: false },
@@ -99,9 +103,12 @@ async function buildFixture(input: {
   readinessCheck?: () => Promise<boolean>;
   logger?: { write(event: never): void };
   store?: typeof CapturingStore;
+  trustedProxies?: string[];
+  allowedHosts?: string[];
+  config?: WebAuthConfig;
 } = {}) {
   const clock = createTestClock(fixedNow);
-  const config = webConfig();
+  const config = input.config ?? webConfig();
   const sessionService = createWebSessionService({
     db: database.db,
     keys: deriveWebAuthKeys(config.authKey),
@@ -128,7 +135,8 @@ async function buildFixture(input: {
     signingKey,
     projectService: createProjectService({ db: database.db, clock: clock.now }),
     host: "127.0.0.1",
-    allowedHosts: ["127.0.0.1", "localhost"],
+    allowedHosts: input.allowedHosts ?? ["127.0.0.1", "localhost"],
+    trustedProxies: input.trustedProxies ?? [],
     admin: null,
     logger: input.logger as never,
     rateLimits: input.limits ?? testLimits,
@@ -220,6 +228,44 @@ async function rawDuplicateIdempotencyRequest(input: {
   }).finally(() => socket?.destroy());
 }
 
+async function rawDuplicateForwardedForRequest(input: {
+  port: number;
+  firstIp: string;
+  secondIp: string;
+}): Promise<{ statusCode: number; response: string }> {
+  let socket: Socket | undefined;
+  return new Promise<{ statusCode: number; response: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket?.destroy();
+      reject(new Error("raw forwarded request timed out"));
+    }, 2_000);
+    socket = connect({ host: "127.0.0.1", port: input.port }, () => {
+      socket?.write([
+        "GET /auth/github/start HTTP/1.1",
+        "Host: 127.0.0.1",
+        `X-Forwarded-For: ${input.firstIp}`,
+        `X-Forwarded-For: ${input.secondIp}`,
+        "Connection: close",
+        "",
+        "",
+      ].join("\r\n"));
+    });
+    const chunks: Buffer[] = [];
+    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+    socket.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    socket.once("end", () => {
+      clearTimeout(timeout);
+      const response = Buffer.concat(chunks).toString("utf8");
+      const status = /^HTTP\/1\.1 (\d{3})\b/.exec(response)?.[1];
+      if (status === undefined) return reject(new Error("missing raw forwarded response status"));
+      resolve({ statusCode: Number(status), response });
+    });
+  }).finally(() => socket?.destroy());
+}
+
 beforeAll(async () => {
   await migrateDatabase(database.db);
 });
@@ -234,6 +280,143 @@ afterAll(async () => {
 });
 
 describe("hosted release security controls", () => {
+  it("uses distinct opaque OAuth buckets for forwarded clients only behind an explicitly trusted proxy", async () => {
+    const logged: unknown[] = [];
+    const clientIps = ["198.51.100.21", "198.51.100.22"];
+    const socketIp = "127.0.0.1";
+    const fixture = await buildFixture({
+      store: CapturingStore,
+      limits: { ...testLimits, oauthStart: 1 },
+      trustedProxies: [socketIp],
+      logger: { write: (event: never) => logged.push(event) },
+      config: webConfig({
+        callbackUrl: new URL("https://agentmesh.example/auth/github/callback"),
+        publicOrigin: new URL("https://agentmesh.example"),
+        secureCookies: true,
+      }),
+    });
+    try {
+      const responses = [];
+      for (const clientIp of clientIps) {
+        responses.push(await fixture.app.inject({
+          method: "GET",
+          url: "/auth/github/start",
+          remoteAddress: socketIp,
+          headers: { "x-forwarded-for": clientIp },
+        }));
+      }
+      expect(responses.map((response) => response.statusCode)).toEqual([302, 302]);
+      expect(CapturingStore.keys).toHaveLength(2);
+      expect(new Set(CapturingStore.keys).size).toBe(2);
+      const rendered = JSON.stringify({
+        keys: CapturingStore.keys,
+        logs: logged,
+        responses: responses.map((response) => ({ headers: response.headers, body: response.body })),
+      });
+      for (const rawIp of [...clientIps, socketIp]) expect(rendered).not.toContain(rawIp);
+      for (const key of CapturingStore.keys) expect(key).toMatch(/^oauth-start:[a-f0-9]{64}$/);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
+  it("ignores spoofed forwarding headers from an untrusted direct source", async () => {
+    const logged: unknown[] = [];
+    const socketIp = "203.0.113.90";
+    const forwardedIps = ["198.51.100.31", "198.51.100.32", "198.51.100.33"];
+    const fixture = await buildFixture({
+      store: CapturingStore,
+      limits: { ...testLimits, oauthStart: 2 },
+      trustedProxies: ["127.0.0.1"],
+      logger: { write: (event: never) => logged.push(event) },
+    });
+    try {
+      const statuses = [];
+      const responses = [];
+      for (const forwarded of forwardedIps) {
+        const response = await fixture.app.inject({
+          method: "GET",
+          url: "/auth/github/start",
+          remoteAddress: socketIp,
+          headers: { "x-forwarded-for": forwarded },
+        });
+        responses.push(response);
+        statuses.push(response.statusCode);
+      }
+      expect(statuses).toEqual([302, 302, 429]);
+      expect(new Set(CapturingStore.keys).size).toBe(1);
+      const rendered = JSON.stringify({
+        keys: CapturingStore.keys,
+        logs: logged,
+        responses: responses.map((response) => ({ headers: response.headers, body: response.body })),
+      });
+      for (const rawIp of [socketIp, ...forwardedIps]) expect(rendered).not.toContain(rawIp);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
+  it("rejects malformed or ambiguous trusted forwarding input before OAuth state or limiter storage", async () => {
+    const malformedIp = "malformed-forwarded-client";
+    const duplicateIps = ["198.51.100.41", "198.51.100.42"];
+    const fixture = await buildFixture({
+      store: CapturingStore,
+      trustedProxies: ["127.0.0.1"],
+    });
+    const port = await listenLoopback(fixture.app);
+    try {
+      const malformed = await fixture.app.inject({
+        method: "GET",
+        url: "/auth/github/start",
+        remoteAddress: "127.0.0.1",
+        headers: { "x-forwarded-for": malformedIp },
+      });
+      const ambiguous = await rawDuplicateForwardedForRequest({
+        port,
+        firstIp: duplicateIps[0]!,
+        secondIp: duplicateIps[1]!,
+      });
+      expect([malformed.statusCode, ambiguous.statusCode]).toEqual([400, 400]);
+      expect(CapturingStore.keys).toHaveLength(0);
+      expect(await database.db.select({ digest: oauthAttempts.attemptDigest }).from(oauthAttempts)).toHaveLength(0);
+      const rendered = JSON.stringify({
+        malformed: { headers: malformed.headers, body: malformed.body },
+        ambiguous: ambiguous.response,
+        keys: CapturingStore.keys,
+      });
+      for (const rawValue of [malformedIp, ...duplicateIps]) expect(rendered).not.toContain(rawValue);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
+  it("keeps loopback readiness available with a public-only host setting while rejecting hostile hosts", async () => {
+    const publicOnly = loadConfig({
+      DATABASE_URL: databaseUrl,
+      AGENT_SESSION_SIGNING_KEY: Buffer.alloc(32, 7).toString("base64url"),
+      ALLOWED_HOSTS: "agentmesh.public.example",
+    });
+    const fixture = await buildFixture({ allowedHosts: publicOnly.allowedHosts, readinessCheck: async () => true });
+    try {
+      const internalReady = await fixture.app.inject({
+        method: "GET",
+        url: "/ready",
+        headers: { host: "127.0.0.1" },
+      });
+      const hostile = await fixture.app.inject({
+        method: "GET",
+        url: "/ready",
+        headers: { host: "hostile.public.example" },
+      });
+      expect(internalReady.statusCode).toBe(200);
+      expect(internalReady.json()).toEqual({ status: "ready" });
+      expect(hostile.statusCode).toBe(403);
+      expect(hostile.body).not.toContain("hostile.public.example");
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
   it("keeps OAuth start and callback IP buckets independent and opaque", async () => {
     const fixture = await buildFixture({ store: CapturingStore });
     const cookies: string[] = [];
@@ -496,6 +679,52 @@ describe("hosted release security controls", () => {
         [fixture.project.id],
       );
       expect(rows.rows).toHaveLength(0);
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
+  it("returns a secret-free 413 for a hosted mutation body over 4096 bytes without creating a token", async () => {
+    const logged: unknown[] = [];
+    const planted = `oversized-body-${randomUUID()}`;
+    const body = JSON.stringify({ label: planted.repeat(128) });
+    expect(Buffer.byteLength(body)).toBeGreaterThan(4_096);
+    const fixture = await buildFixture({
+      store: CapturingStore,
+      logger: { write: (event: never) => logged.push(event) },
+    });
+    try {
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${fixture.project.id}/connections`,
+        headers: {
+          ...fixture.headers,
+          "content-type": "application/json",
+          "idempotency-key": randomUUID(),
+        },
+        payload: body,
+      });
+      expect(response.statusCode).toBe(413);
+      expect(response.json()).toEqual({
+        error: {
+          code: "INVALID_REQUEST",
+          message: "Request validation failed",
+          request_id: expect.any(String),
+        },
+      });
+      expectSecurityHeaders(response.headers);
+      const rows = await database.pool.query(
+        "SELECT id FROM project_tokens WHERE project_id = $1",
+        [fixture.project.id],
+      );
+      expect(rows.rows).toHaveLength(0);
+      const rendered = JSON.stringify({
+        logs: logged,
+        keys: CapturingStore.keys,
+        headers: response.headers,
+        body: response.body,
+      });
+      expect(rendered).not.toContain(planted);
     } finally {
       await fixture.app.close();
     }

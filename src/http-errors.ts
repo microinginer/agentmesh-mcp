@@ -40,7 +40,7 @@ const messages: Record<WebHttpErrorCode, string> = {
 export function sendWebHttpError(
   request: FastifyRequest,
   reply: FastifyReply,
-  statusCode: 400 | 401 | 403 | 404 | 409 | 503,
+  statusCode: 400 | 401 | 403 | 404 | 409 | 413 | 503,
   code: WebHttpErrorCode,
 ) {
   return reply.code(statusCode).send({
@@ -50,4 +50,9 @@ export function sendWebHttpError(
       request_id: request.id,
     },
   });
+}
+
+export function sendInvalidPayloadError(error: Error, request: FastifyRequest, reply: FastifyReply) {
+  const status = (error as Error & { code?: unknown }).code === "FST_ERR_CTP_BODY_TOO_LARGE" ? 413 : 400;
+  return sendWebHttpError(request, reply, status, "INVALID_REQUEST");
 }
