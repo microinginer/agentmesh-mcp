@@ -14,7 +14,14 @@ export type AuditActor =
 
 export interface AuditMetadata {
   provider?: "github";
-  oauth_failure_stage?: "exchange" | "profile" | "identity" | "session";
+  oauth_failure_stage?:
+    | "callback_cookie"
+    | "callback_query"
+    | "current_session"
+    | "exchange"
+    | "profile"
+    | "identity"
+    | "session";
   connection_label?: string;
   project_name?: string;
   actor_kind?: "user" | "headless_cli";

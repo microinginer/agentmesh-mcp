@@ -250,11 +250,14 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
     oauthCookieKey: deriveWebAuthKeys(dependencies.config.authKey).oauthCookieKey,
     ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
   });
-  const rejectedCallback = async (reply: FastifyReply): Promise<FastifyReply> => {
+  const rejectedCallback = async (
+    reply: FastifyReply,
+    stage: "callback_cookie" | "callback_query" | "current_session",
+  ): Promise<FastifyReply> => {
     await dependencies.auditService.recordBestEffort({
       userId: null,
       eventType: "auth.login_failed",
-      metadata: { provider: "github" },
+      metadata: { provider: "github", oauth_failure_stage: stage },
     });
     return failure(reply);
   };
@@ -283,25 +286,29 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
     const attempt = attempts[0];
     if (rawCookies.repeated || attemptCookies.invalid || attemptCookies.values.length !== 1
       || attempt === undefined || attempt === null) {
-      return rejectedCallback(reply);
+      return rejectedCallback(reply, "callback_cookie");
     }
     const input = callbackInput(request);
-    if (input === null) return rejectedCallback(reply);
+    if (input === null) return rejectedCallback(reply, "callback_query");
 
     let currentSession = null;
     const sessionToken = cookieCandidates(rawCookies, names.session);
-    if (sessionToken.invalid || sessionToken.values.length > 1) return rejectedCallback(reply);
+    if (sessionToken.invalid || sessionToken.values.length > 1) {
+      return rejectedCallback(reply, "current_session");
+    }
     if (sessionToken.values.length === 1) {
       const value = sessionToken.values[0];
-      if (value === undefined || !isCanonicalWebCredential(value)) return rejectedCallback(reply);
+      if (value === undefined || !isCanonicalWebCredential(value)) {
+        return rejectedCallback(reply, "current_session");
+      }
       try {
         currentSession = await dependencies.sessionService.authenticate(value);
       } catch {
-        return rejectedCallback(reply);
+        return rejectedCallback(reply, "current_session");
       }
       if (currentSession === null) {
         reply.clearCookie(names.session, commonCookieOptions);
-        return rejectedCallback(reply);
+        return rejectedCallback(reply, "current_session");
       }
     }
     const completed = await oauth.complete({ ...input, attempt, currentSession });

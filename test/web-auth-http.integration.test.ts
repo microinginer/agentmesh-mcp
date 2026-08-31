@@ -460,11 +460,52 @@ describe("web OAuth HTTP routes", () => {
         expect.objectContaining({
           userId: null,
           eventType: "auth.login_failed",
-          metadata: { provider: "github" },
+          metadata: { provider: "github", oauth_failure_stage: "callback_query" },
         }),
       ]);
     } finally {
       await app.close();
+    }
+  });
+
+  it("distinguishes a malformed callback cookie from a stale current session without retaining either value", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
+    const malformedCookie = buildWebApp({ github: github.client });
+    try {
+      const attempt = await start(malformedCookie.app);
+      const callback = await malformedCookie.app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${attempt.state}`,
+        headers: { cookie: `${attempt.cookie}; malformed` },
+      });
+      expect(callback.headers.location).toBe("/?auth_error=github");
+      expect(await database.db.select().from(auditEvents)).toEqual([
+        expect.objectContaining({
+          metadata: { provider: "github", oauth_failure_stage: "callback_cookie" },
+        }),
+      ]);
+    } finally {
+      await malformedCookie.app.close();
+    }
+
+    await resetDatabase(database.pool);
+    const staleSession = buildWebApp({ github: github.client });
+    try {
+      const attempt = await start(staleSession.app);
+      const staleToken = Buffer.alloc(32, 7).toString("base64url");
+      const callback = await staleSession.app.inject({
+        method: "GET",
+        url: `/auth/github/callback?code=one-use&state=${attempt.state}`,
+        headers: { cookie: `${attempt.cookie}; agentmesh_session=${staleToken}` },
+      });
+      expect(callback.headers.location).toBe("/?auth_error=github");
+      expect(await database.db.select().from(auditEvents)).toEqual([
+        expect.objectContaining({
+          metadata: { provider: "github", oauth_failure_stage: "current_session" },
+        }),
+      ]);
+    } finally {
+      await staleSession.app.close();
     }
   });
 
