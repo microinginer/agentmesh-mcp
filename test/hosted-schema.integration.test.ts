@@ -94,6 +94,7 @@ describe("hosted control-plane schema", () => {
       );
 
       await fixture.migrateHosted();
+      await fixture.migrateHosted();
 
       const [project] = await fixture.database.db.select().from(projects);
       const [token] = await fixture.database.db.select().from(projectTokens);
@@ -108,6 +109,25 @@ describe("hosted control-plane schema", () => {
         id: agentId,
         registeredViaTokenId: null,
       });
+      const observed = await fixture.database.pool.query<{
+        id: string;
+        connection_id: string | null;
+        connection_label: string | null;
+        connection_expires_at: Date | null;
+        connection_revoked_at: Date | null;
+      }>(
+        `SELECT id, connection_id, connection_label, connection_expires_at, connection_revoked_at
+           FROM observer.agents
+          WHERE id = $1`,
+        [agentId],
+      );
+      expect(observed.rows).toEqual([{
+        id: agentId,
+        connection_id: null,
+        connection_label: null,
+        connection_expires_at: null,
+        connection_revoked_at: null,
+      }]);
     } finally {
       await fixture.destroy();
     }

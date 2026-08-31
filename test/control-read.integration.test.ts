@@ -10,7 +10,15 @@ import { encodeAdminCursor } from "../src/admin/contracts.js";
 import { createProjectReadService } from "../src/control/read-service.js";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { activityEvents, agents, messages, oauthIdentities, projects, users } from "../src/db/schema.js";
+import {
+  activityEvents,
+  agents,
+  messages,
+  oauthIdentities,
+  projectTokens,
+  projects,
+  users,
+} from "../src/db/schema.js";
 import * as schema from "../src/db/schema.js";
 import { buildHttpApp } from "../src/http.js";
 import { createProjectService } from "../src/projects/service.js";
@@ -50,6 +58,8 @@ interface ReadFixture {
   agentA2: string;
   agentB: string;
   agentB2: string;
+  connectionA: string;
+  connectionB: string;
   messageA: string;
   messageB: string;
 }
@@ -71,6 +81,8 @@ async function seedReadFixture(): Promise<ReadFixture> {
     agentA2: randomUUID(),
     agentB: randomUUID(),
     agentB2: randomUUID(),
+    connectionA: randomUUID(),
+    connectionB: randomUUID(),
     messageA: randomUUID(),
     messageB: randomUUID(),
   };
@@ -85,10 +97,28 @@ async function seedReadFixture(): Promise<ReadFixture> {
       archivedAt: new Date("2026-08-31T11:00:00.000Z"),
     },
   ]);
+  await database.db.insert(projectTokens).values([
+    {
+      id: fixture.connectionA,
+      projectId: fixture.projectA,
+      tokenDigest: Buffer.alloc(32, 11),
+      label: "Main Mac",
+      expiresAt: new Date("2026-09-30T12:00:00.000Z"),
+      revokedAt: new Date("2026-08-31T11:30:00.000Z"),
+    },
+    {
+      id: fixture.connectionB,
+      projectId: fixture.projectB,
+      tokenDigest: Buffer.alloc(32, 12),
+      label: "Other owner connection",
+      expiresAt: new Date("2026-08-30T12:00:00.000Z"),
+    },
+  ]);
   await database.db.insert(agents).values([
     {
       id: fixture.agentA,
       projectId: fixture.projectA,
+      registeredViaTokenId: fixture.connectionA,
       registrationDigest: Buffer.alloc(32, 1),
       name: "alpha-sender",
       client: "codex",
@@ -106,6 +136,7 @@ async function seedReadFixture(): Promise<ReadFixture> {
     {
       id: fixture.agentB,
       projectId: fixture.projectB,
+      registeredViaTokenId: fixture.connectionB,
       registrationDigest: Buffer.alloc(32, 3),
       name: "beta-sender",
       client: "codex",
@@ -173,7 +204,27 @@ describe("scope-aware project reads", () => {
     const archived = await service.getOverview(ownerScope, fixture.archivedA);
 
     expect(overview).toMatchObject({ found: true, data: { project: { id: fixture.projectA } } });
-    expect(listedAgents).toMatchObject({ found: true, data: { items: expect.any(Array) } });
+    expect(listedAgents).toMatchObject({
+      found: true,
+      data: {
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: fixture.agentA,
+            connection: {
+              id: fixture.connectionA,
+              label: "Main Mac",
+              status: "revoked",
+              expires_at: "2026-09-30T12:00:00.000Z",
+              revoked_at: "2026-08-31T11:30:00.000Z",
+            },
+          }),
+          expect.objectContaining({ id: fixture.agentA2, connection: null }),
+        ]),
+      },
+    });
+    const serializedAgents = JSON.stringify(listedAgents);
+    expect(serializedAgents).not.toContain("Other owner connection");
+    expect(serializedAgents).not.toMatch(/token|digest/i);
     expect(listedMessages).toMatchObject({
       found: true,
       data: { items: [expect.objectContaining({ id: fixture.messageA, preview: "owner A private body" })] },
@@ -193,7 +244,7 @@ describe("scope-aware project reads", () => {
     ))).toBe(true);
   });
 
-  it("never returns another owner's message before or after an ownership change", async () => {
+  it("never returns another owner's messages or connection provenance after ownership changes", async () => {
     const fixture = await seedReadFixture();
     const service = createProjectReadService({ db: database.db, clock: () => now });
     const ownerA = { kind: "owner" as const, userId: fixture.ownerA };
@@ -201,6 +252,7 @@ describe("scope-aware project reads", () => {
 
     expect(await service.listMessages(ownerB, fixture.projectA, { limit: 50 })).toEqual({ found: false });
     expect(await service.getMessage(ownerB, fixture.projectA, fixture.messageA)).toEqual({ found: false });
+    expect(await service.listAgents(ownerB, fixture.projectA, { limit: 50 })).toEqual({ found: false });
 
     await database.db.update(projects).set({ ownerUserId: fixture.ownerB }).where(
       eq(projects.id, fixture.projectA),
@@ -208,9 +260,20 @@ describe("scope-aware project reads", () => {
 
     expect(await service.listMessages(ownerA, fixture.projectA, { limit: 50 })).toEqual({ found: false });
     expect(await service.getMessage(ownerA, fixture.projectA, fixture.messageA)).toEqual({ found: false });
+    expect(await service.listAgents(ownerA, fixture.projectA, { limit: 50 })).toEqual({ found: false });
     expect(await service.getMessage(ownerB, fixture.projectA, fixture.messageA)).toMatchObject({
       found: true,
       data: { text: "owner A private body" },
+    });
+    const reassignedAgents = await service.listAgents(ownerB, fixture.projectA, { limit: 50 });
+    expect(reassignedAgents).toMatchObject({
+      found: true,
+      data: { items: expect.arrayContaining([
+        expect.objectContaining({
+          id: fixture.agentA,
+          connection: expect.objectContaining({ id: fixture.connectionA, label: "Main Mac" }),
+        }),
+      ]) },
     });
   });
 
@@ -323,6 +386,25 @@ describe("owner read HTTP routes", () => {
         headers: { cookie: cookieA },
       });
       expect(detail.json()).toMatchObject({ message: { text: "owner A private body" } });
+      const agentList = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${fixture.projectA}/agents`,
+        headers: { cookie: cookieA },
+      });
+      expect(agentList.json()).toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: fixture.agentA,
+            connection: expect.objectContaining({
+              id: fixture.connectionA,
+              label: "Main Mac",
+              status: "revoked",
+            }),
+          }),
+          expect.objectContaining({ id: fixture.agentA2, connection: null }),
+        ]),
+      });
+      expect(JSON.stringify(agentList.json())).not.toMatch(/token|digest/i);
 
       for (const cookie of [cookieB]) {
         const foreign = await app.inject({

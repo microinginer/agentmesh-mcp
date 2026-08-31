@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { ActivityMetadata } from "../activity/types.js";
 import type { AuditMetadata } from "../audit/types.js";
 import {
@@ -294,8 +294,19 @@ export const observerAgents = observer.view("agents").as((query) =>
       capabilities: agents.capabilities,
       lastSeenAt: agents.lastSeenAt,
       createdAt: agents.createdAt,
+      connectionId: sql<string | null>`${projectTokens.id}`.as("connection_id"),
+      connectionLabel: sql<string | null>`${projectTokens.label}`.as("connection_label"),
+      connectionExpiresAt: sql<Date | null>`${projectTokens.expiresAt}`.as("connection_expires_at"),
+      connectionRevokedAt: sql<Date | null>`${projectTokens.revokedAt}`.as("connection_revoked_at"),
     })
-    .from(agents),
+    .from(agents)
+    .leftJoin(
+      projectTokens,
+      and(
+        eq(projectTokens.id, agents.registeredViaTokenId),
+        eq(projectTokens.projectId, agents.projectId),
+      ),
+    ),
 );
 
 export const observerMessages = observer.view("messages").as((query) =>

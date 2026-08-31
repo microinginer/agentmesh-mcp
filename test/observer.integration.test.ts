@@ -5,7 +5,7 @@ import { Pool, type PoolClient } from "pg";
 
 import { createAuditService } from "../src/audit/service.js";
 import { createDatabase } from "../src/db/client.js";
-import { auditEvents, users } from "../src/db/schema.js";
+import { agents, auditEvents, projectTokens, projects, users } from "../src/db/schema.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import { ensureObserverRole } from "../src/observer/service.js";
 
@@ -174,6 +174,10 @@ describe("pgAdmin observer database boundary", () => {
       "capabilities",
       "last_seen_at",
       "created_at",
+      "connection_id",
+      "connection_label",
+      "connection_expires_at",
+      "connection_revoked_at",
     ]);
     expect(byView.messages?.map((row) => row.column_name)).toEqual([
       "sequence",
@@ -385,6 +389,58 @@ describe("pgAdmin observer database boundary", () => {
     } finally {
       client.release();
       await connection.end();
+    }
+  });
+
+  it("keeps revoked connection provenance visible without exposing its credential", async () => {
+    const projectId = randomUUID();
+    const connectionId = randomUUID();
+    const agentId = randomUUID();
+    const expiresAt = new Date("2026-09-30T12:00:00.000Z");
+    const revokedAt = new Date("2026-08-31T11:30:00.000Z");
+    const connection = observerPool();
+    try {
+      await database.db.insert(projects).values({ id: projectId, name: "observer provenance" });
+      await database.db.insert(projectTokens).values({
+        id: connectionId,
+        projectId,
+        tokenDigest: Buffer.alloc(32, 77),
+        label: "Revoked workstation",
+        expiresAt,
+        revokedAt,
+      });
+      await database.db.insert(agents).values({
+        id: agentId,
+        projectId,
+        registeredViaTokenId: connectionId,
+        registrationDigest: Buffer.alloc(32, 78),
+        name: "codex-workstation",
+        client: "codex",
+      });
+
+      const observed = await connection.query<{
+        connection_id: string | null;
+        connection_label: string | null;
+        connection_expires_at: Date | null;
+        connection_revoked_at: Date | null;
+      }>(
+        `SELECT connection_id, connection_label, connection_expires_at, connection_revoked_at
+           FROM observer.agents
+          WHERE id = $1`,
+        [agentId],
+      );
+      expect(observed.rows).toEqual([{
+        connection_id: connectionId,
+        connection_label: "Revoked workstation",
+        connection_expires_at: expiresAt,
+        connection_revoked_at: revokedAt,
+      }]);
+      expect(JSON.stringify(observed.rows)).not.toMatch(/token|digest/i);
+    } finally {
+      await connection.end();
+      await database.db.delete(agents);
+      await database.db.delete(projectTokens);
+      await database.db.delete(projects);
     }
   });
 

@@ -157,11 +157,14 @@ save the connection again. Do not use the application owner's PostgreSQL
 password.
 
 Data is under
-`Databases > agentmesh > Schemas > observer > Views`. The four views expose
-only selected diagnostic columns. There is no `project_tokens` view, and
-credential-derived columns such as registration digests and idempotency keys
-are intentionally hidden. The `agentmesh_observer` role is read-only and has
-no access to the underlying `public` tables.
+`Databases > agentmesh > Schemas > observer > Views`. The seven views
+(`projects`, `agents`, `messages`, `activity_events`, `users`, `connections`,
+and `audit_events`) expose only selected diagnostic columns. `observer.agents`
+also shows the safe connection ID, label, expiry, and revocation time used to
+register an agent. There is no `project_tokens` view, and credential-derived
+columns such as token or registration digests and idempotency keys are
+intentionally hidden. The `agentmesh_observer` role is read-only and has no
+access to the underlying `public` tables.
 
 Observer provisioning is supported only for a dedicated AgentMesh database.
 It fails closed before changing inherited `PUBLIC` privileges when an unrelated

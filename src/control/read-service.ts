@@ -27,7 +27,7 @@ import {
 } from "../admin/contracts.js";
 import { uuidV4Schema } from "../contracts.js";
 import type { AgentMeshDatabase } from "../db/client.js";
-import { activityEvents, agents, messages, projects } from "../db/schema.js";
+import { activityEvents, agents, messages, projects, projectTokens } from "../db/schema.js";
 
 const ONLINE_WINDOW_MS = 5 * 60 * 1_000;
 const IDLE_WINDOW_MS = 30 * 60 * 1_000;
@@ -37,6 +37,7 @@ export type ProjectReadScope =
   | { kind: "operator" };
 
 type Presence = "online" | "idle" | "offline";
+type ConnectionStatus = "active" | "expired" | "revoked";
 
 interface ProjectReadServiceDependencies {
   db: AgentMeshDatabase;
@@ -59,6 +60,16 @@ function presenceAt(lastSeenAt: Date, now: Date): Presence {
   if (elapsed <= ONLINE_WINDOW_MS) return "online";
   if (elapsed <= IDLE_WINDOW_MS) return "idle";
   return "offline";
+}
+
+function connectionStatusAt(
+  expiresAt: Date | null,
+  revokedAt: Date | null,
+  now: Date,
+): ConnectionStatus {
+  if (revokedAt !== null) return "revoked";
+  if (expiresAt !== null && expiresAt.getTime() <= now.getTime()) return "expired";
+  return "active";
 }
 
 function previewMessage(text: string): string {
@@ -210,7 +221,17 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
       capabilities: agents.capabilities,
       last_seen_at: agents.lastSeenAt,
       created_at: createdAt,
-    }).from(agents).innerJoin(projects, eq(projects.id, agents.projectId)).where(and(
+      connection_id: projectTokens.id,
+      connection_label: projectTokens.label,
+      connection_expires_at: projectTokens.expiresAt,
+      connection_revoked_at: projectTokens.revokedAt,
+    }).from(agents)
+      .innerJoin(projects, eq(projects.id, agents.projectId))
+      .leftJoin(projectTokens, and(
+        eq(projectTokens.id, agents.registeredViaTokenId),
+        eq(projectTokens.projectId, agents.projectId),
+      ))
+      .where(and(
       scopePredicate(scope, projectId),
       eq(agents.projectId, projectId),
       cursor?.kind === "created"
@@ -228,9 +249,26 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
     return {
       found: true as const,
       data: createdPage(rows.map((row) => ({
-        ...row,
+        id: row.id,
+        name: row.name,
+        client: row.client,
+        capabilities: row.capabilities,
+        created_at: row.created_at,
         status: presenceAt(row.last_seen_at, now),
         last_seen_at: row.last_seen_at.toISOString(),
+        connection: row.connection_id === null
+          ? null
+          : {
+              id: row.connection_id,
+              label: row.connection_label as string,
+              status: connectionStatusAt(
+                row.connection_expires_at,
+                row.connection_revoked_at,
+                now,
+              ),
+              expires_at: row.connection_expires_at?.toISOString() ?? null,
+              revoked_at: row.connection_revoked_at?.toISOString() ?? null,
+            },
       })), query.limit),
     };
   }
