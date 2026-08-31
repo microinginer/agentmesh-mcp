@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { and, count, eq, isNull } from "drizzle-orm";
 import { request as httpRequest } from "node:http";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { ClientRequest } from "node:http";
 import type { PoolClient } from "pg";
 
 import { createDatabase } from "../src/db/client.js";
@@ -32,6 +33,9 @@ const errorForbiddenText = [
   "fake-digest-value",
   "database-error-cause",
 ];
+const DATABASE_LOCK_TIMEOUT_MS = 2_000;
+const LOOPBACK_REQUEST_TIMEOUT_MS = 1_000;
+const MAX_LOOPBACK_RESPONSE_BYTES = 64 * 1_024;
 
 beforeAll(async () => {
   await migrateDatabase(database.db);
@@ -81,42 +85,53 @@ function expectSafeError(
   }
 }
 
-async function waitForDatabaseLock(queryFragment: string): Promise<void> {
-  const deadline = Date.now() + 2_000;
+async function waitForDatabaseLocks(queryFragment: string, expectedCount: number): Promise<void> {
+  const deadline = Date.now() + DATABASE_LOCK_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const result = await database.pool.query<{ waiting: boolean }>(`
-      SELECT EXISTS (
-        SELECT 1
-          FROM pg_stat_activity
-         WHERE datname = current_database()
-           AND state = 'active'
-           AND wait_event_type = 'Lock'
-           AND query ILIKE $1
-      ) AS waiting
+    const result = await database.pool.query<{ waiting: number }>(`
+      SELECT count(*)::int AS waiting
+        FROM pg_stat_activity
+       WHERE datname = current_database()
+         AND pid <> pg_backend_pid()
+         AND state = 'active'
+         AND wait_event_type = 'Lock'
+         AND query ILIKE $1
     `, [`%${queryFragment}%`]);
-    if (result.rows[0]?.waiting) return;
+    if (result.rows[0]?.waiting === expectedCount) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`Timed out waiting for ${queryFragment} to acquire the session lock`);
+  throw new Error("Timed out waiting for session lock contenders");
 }
 
-async function lockSession(sessionId: string): Promise<PoolClient> {
+interface HeldSessionLock {
+  client: PoolClient;
+  released: boolean;
+}
+
+async function lockSession(sessionId: string): Promise<HeldSessionLock> {
   const client = await database.pool.connect();
+  let began = false;
   try {
     await client.query("BEGIN");
+    began = true;
     await client.query('SELECT id FROM web_sessions WHERE id = $1 FOR UPDATE', [sessionId]);
-    return client;
+    return { client, released: false };
   } catch (error) {
+    if (began) {
+      await client.query("ROLLBACK").catch(() => undefined);
+    }
     client.release();
     throw error;
   }
 }
 
-async function releaseSessionLock(client: PoolClient): Promise<void> {
+async function releaseSessionLock(lock: HeldSessionLock): Promise<void> {
+  if (lock.released) return;
+  lock.released = true;
   try {
-    await client.query("COMMIT");
+    await lock.client.query("ROLLBACK");
   } finally {
-    client.release();
+    lock.client.release();
   }
 }
 
@@ -127,14 +142,25 @@ async function rawHeaderRequest(
   headers: readonly string[],
   body = "",
 ): Promise<{ body: string; statusCode: number }> {
-  await app.listen({ host: "127.0.0.1", port: 0 });
-  const address = app.server.address();
-  if (address === null || typeof address === "string") {
-    throw new Error("Loopback listener did not expose a TCP address");
-  }
   try {
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Loopback listener did not expose a TCP address");
+    }
     return await new Promise((resolve, reject) => {
-      const request = httpRequest({
+      let completed = false;
+      let request: ClientRequest | null = null;
+      let timeout: NodeJS.Timeout | undefined;
+      const finish = (error?: Error, value?: { body: string; statusCode: number }) => {
+        if (completed) return;
+        completed = true;
+        if (timeout !== undefined) clearTimeout(timeout);
+        if (request !== null && !request.destroyed) request.destroy();
+        if (error !== undefined) reject(error);
+        else if (value !== undefined) resolve(value);
+      };
+      request = httpRequest({
         host: "127.0.0.1",
         port: address.port,
         method,
@@ -143,10 +169,18 @@ async function rawHeaderRequest(
       }, (response) => {
         let responseBody = "";
         response.setEncoding("utf8");
-        response.on("data", (chunk: string) => { responseBody += chunk; });
-        response.on("end", () => resolve({ body: responseBody, statusCode: response.statusCode ?? 0 }));
+        response.on("data", (chunk: string) => {
+          responseBody += chunk;
+          if (Buffer.byteLength(responseBody, "utf8") > MAX_LOOPBACK_RESPONSE_BYTES) {
+            finish(new Error("Loopback response exceeded test limit"));
+          }
+        });
+        response.once("aborted", () => finish(new Error("Loopback response aborted")));
+        response.once("error", (error) => finish(error));
+        response.once("end", () => finish(undefined, { body: responseBody, statusCode: response.statusCode ?? 0 }));
       });
-      request.once("error", reject);
+      request.once("error", (error) => finish(error));
+      timeout = setTimeout(() => finish(new Error("Loopback request timed out")), LOOPBACK_REQUEST_TIMEOUT_MS);
       request.end(body);
     });
   } finally {
@@ -354,32 +388,52 @@ describe("database-backed web sessions", () => {
   });
 
   it("serializes concurrent exact-five-minute touches and queued revocation before authentication", async () => {
-    const clock = createTestClock("2026-08-01T00:00:00Z");
+    const issueClock = createTestClock("2026-08-01T00:00:00Z");
     const user = await seedUser();
-    const service = createWebSessionService({ db: database.db, keys, clock: clock.now });
-    const issued = await service.issue(user.id);
+    const issueService = createWebSessionService({ db: database.db, keys, clock: issueClock.now });
+    const issued = await issueService.issue(user.id);
     expect(issued).not.toBeNull();
     if (issued === null) return;
 
-    clock.set("2026-08-01T00:05:00Z");
-    const touchLock = await lockSession(issued.sessionId);
-    const firstTouch = service.authenticate(issued.sessionToken);
-    await waitForDatabaseLock('from "web_sessions"');
-    const secondTouch = service.authenticate(issued.sessionToken);
-    await releaseSessionLock(touchLock);
-    const [first, second] = await Promise.all([firstTouch, secondTouch]);
-    expect(first?.idleExpiresAt.toISOString()).toBe("2026-08-08T00:05:00.000Z");
-    expect(second?.idleExpiresAt.toISOString()).toBe("2026-08-08T00:05:00.000Z");
-    const [storedTouch] = await database.db.select().from(webSessions).where(eq(webSessions.id, issued.sessionId));
-    expect(storedTouch?.lastSeenAt.toISOString()).toBe("2026-08-01T00:05:00.000Z");
+    const clockA = createTestClock("2026-08-01T00:05:00.000Z");
+    const clockB = createTestClock("2026-08-01T00:05:00.001Z");
+    const serviceA = createWebSessionService({ db: database.db, keys, clock: clockA.now });
+    const serviceB = createWebSessionService({ db: database.db, keys, clock: clockB.now });
+    const started: Promise<unknown>[] = [];
+    let touchLock: HeldSessionLock | null = null;
+    let revokeLock: HeldSessionLock | null = null;
+    try {
+      touchLock = await lockSession(issued.sessionId);
+      const contenderA = serviceA.authenticate(issued.sessionToken);
+      started.push(contenderA);
+      await waitForDatabaseLocks('from "web_sessions"', 1);
+      const contenderB = serviceB.authenticate(issued.sessionToken);
+      started.push(contenderB);
+      await waitForDatabaseLocks('from "web_sessions"', 2);
+      await releaseSessionLock(touchLock);
+      touchLock = null;
+      const [first, second] = await Promise.all([contenderA, contenderB]);
+      expect(first?.idleExpiresAt.toISOString()).toBe("2026-08-08T00:05:00.000Z");
+      expect(second?.idleExpiresAt.toISOString()).toBe("2026-08-08T00:05:00.000Z");
+      const [storedTouch] = await database.db.select().from(webSessions).where(eq(webSessions.id, issued.sessionId));
+      expect(storedTouch?.lastSeenAt.toISOString()).toBe("2026-08-01T00:05:00.000Z");
+      expect(storedTouch?.idleExpiresAt.toISOString()).toBe("2026-08-08T00:05:00.000Z");
 
-    const revokeLock = await lockSession(issued.sessionId);
-    const queuedRevoke = service.revoke(issued.sessionId);
-    await waitForDatabaseLock('update "web_sessions"');
-    const afterQueuedRevoke = service.authenticate(issued.sessionToken);
-    await releaseSessionLock(revokeLock);
-    await queuedRevoke;
-    await expect(afterQueuedRevoke).resolves.toBeNull();
+      revokeLock = await lockSession(issued.sessionId);
+      const queuedRevoke = serviceA.revoke(issued.sessionId);
+      started.push(queuedRevoke);
+      await waitForDatabaseLocks('update "web_sessions"', 1);
+      const afterQueuedRevoke = serviceB.authenticate(issued.sessionToken);
+      started.push(afterQueuedRevoke);
+      await releaseSessionLock(revokeLock);
+      revokeLock = null;
+      await queuedRevoke;
+      await expect(afterQueuedRevoke).resolves.toBeNull();
+    } finally {
+      if (touchLock !== null) await releaseSessionLock(touchLock);
+      if (revokeLock !== null) await releaseSessionLock(revokeLock);
+      await Promise.allSettled(started);
+    }
   });
 
   it("returns only identity and session snapshots while keeping the CSRF digest private", async () => {
