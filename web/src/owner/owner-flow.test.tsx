@@ -399,6 +399,7 @@ describe("AgentMesh owner vertical slice", () => {
 
     expect(await screen.findByText("2 online")).toBeInTheDocument();
     expect(screen.getByText("Main Mac / Codex")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "Agent presence" })).getByText("Active connection")).toBeInTheDocument();
     expect(screen.getByText("Connection created")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Manage connections" })).toBeInTheDocument();
   });

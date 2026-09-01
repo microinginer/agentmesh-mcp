@@ -56,6 +56,11 @@ function relativeTime(timestamp: string): string {
   return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
 }
 
+function connectionStatusLabel(connection: Agent["connection"]): string {
+  if (connection === null) return "Not assigned";
+  return `${connection.status.charAt(0).toUpperCase()}${connection.status.slice(1)} connection`;
+}
+
 export function ProjectOverviewPage() {
   const projectId = useParams().projectId ?? "";
   const { api } = useSession();
@@ -172,7 +177,10 @@ export function ProjectOverviewPage() {
                     <span className={`status-orb status-orb--${agent.status}`} />
                     <div><strong>{agent.name}</strong><span>{agent.client}</span></div>
                     <div><strong className={`presence presence--${agent.status}`}>{agent.status}</strong><span>Last seen {relativeTime(agent.last_seen_at)}</span></div>
-                    <span>{agent.connection?.label ?? "No connection"}</span>
+                    <div className="agent-connection">
+                      <strong>{agent.connection?.label ?? "No connection"}</strong>
+                      <span>{connectionStatusLabel(agent.connection)}</span>
+                    </div>
                   </article>
                 ))}
               </div>
