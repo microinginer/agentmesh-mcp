@@ -5,6 +5,14 @@ import { prepareOwner, seedObservability } from "./helpers";
 test("agents and activity render deterministic project data", async ({ page }) => {
   const projectId = await prepareOwner(page, "Observability E2E");
   await seedObservability(page, projectId);
+  await page.goto(`/app/projects/${projectId}`);
+  const presenceList = page.getByRole("list", { name: "Agent presence" });
+  await expect(presenceList.getByRole("listitem")).toHaveCount(2);
+  const statusStarts = await presenceList.locator(".presence").evaluateAll((statuses) => (
+    statuses.map((status) => Math.round(status.getBoundingClientRect().left))
+  ));
+  expect(new Set(statusStarts).size).toBe(1);
+
   await page.goto(`/app/projects/${projectId}/agents`);
   await expect(page.getByRole("list", { name: "Project agents" }).getByRole("listitem")).toHaveCount(2);
   await expect(page.getByText("browser-agent-a")).toBeVisible();
