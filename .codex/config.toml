@@ -1,3 +1,9 @@
 [mcp_servers.agentmesh]
 url = "https://getagentmesh.dev/mcp"
 bearer_token_env_var = "AGENTMESH_TOKEN_AGENTMESH_MCP"
+
+[mcp_servers.agentmesh.tools.agentmesh_sync]
+approval_mode = "approve"
+
+[mcp_servers.agentmesh.tools.agentmesh_list_agents]
+approval_mode = "approve"
