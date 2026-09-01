@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/badge/license-Apache--2.0-2563eb?style=flat-square"></a>
+  <a href="https://github.com/microinginer/agentmesh-mcp/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/microinginer/agentmesh-mcp?style=flat-square"></a>
   <img alt="Model Context Protocol" src="https://img.shields.io/badge/MCP-Streamable_HTTP-7c3aed?style=flat-square">
   <img alt="Self-hosted" src="https://img.shields.io/badge/deployment-self--hosted-16a34a?style=flat-square">
   <img alt="Docker Compose" src="https://img.shields.io/badge/Docker-Compose-2496ed?style=flat-square&logo=docker&logoColor=white">
@@ -206,10 +207,15 @@ Build or pull the image, resolve it to an immutable `sha256:` image ID, and
 deploy it with rollback protection:
 
 ```bash
-docker build -t agentmesh:local .
-image_id=$(docker image inspect agentmesh:local --format '{{.Id}}')
+docker pull ghcr.io/microinginer/agentmesh-mcp:v0.1.0
+image_id=$(docker image inspect ghcr.io/microinginer/agentmesh-mcp:v0.1.0 --format '{{.Id}}')
 sudo /opt/agentmesh/scripts/deploy.sh "$image_id"
 ```
+
+To build entirely from source instead, replace the `docker pull` command with
+`docker build -t agentmesh:local .` and inspect `agentmesh:local`. Release tags
+are immutable publication points; still deploy the resolved image ID so a
+rollback never depends on a mutable tag.
 
 Merge `deploy/Caddyfile.site` into the host Caddy configuration, validate the
 complete configuration, then reload Caddy. Adapt the hostname when self-hosting
