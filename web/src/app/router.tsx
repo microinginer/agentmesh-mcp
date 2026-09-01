@@ -10,6 +10,7 @@ const AgentsPage = lazy(() => import("@/activity/agents-page").then((module) => 
 const EventsPage = lazy(() => import("@/activity/events-page").then((module) => ({ default: module.EventsPage })));
 const MessagesPage = lazy(() => import("@/activity/messages-page").then((module) => ({ default: module.MessagesPage })));
 const ConnectionsPage = lazy(() => import("@/connections/connections-page").then((module) => ({ default: module.ConnectionsPage })));
+const GuidePage = lazy(() => import("@/guide/guide-page").then((module) => ({ default: module.GuidePage })));
 const ProjectOverviewPage = lazy(() => import("@/projects/project-overview-page").then((module) => ({ default: module.ProjectOverviewPage })));
 const ProjectsPage = lazy(() => import("@/projects/projects-page").then((module) => ({ default: module.ProjectsPage })));
 const ProjectSettings = lazy(() => import("@/settings/project-settings").then((module) => ({ default: module.ProjectSettings })));
@@ -43,6 +44,7 @@ function AuthenticatedOperator() {
 
 export const appRoutes: RouteObject[] = [
   { path: "/", element: <LandingPage /> },
+  { path: "/guide", element: lazyPage(<GuidePage />) },
   {
     path: "/app",
     element: <AuthenticatedProduct />,

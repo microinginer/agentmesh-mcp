@@ -13,6 +13,18 @@ describe("AgentMesh application router", () => {
 
     expect(screen.getByRole("heading", { name: "Your agents, working as one." })).toBeInTheDocument();
     expect(screen.getByText("AgentMesh")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Guide" })).toHaveAttribute("href", "/guide");
+  });
+
+  it("serves the public guide without loading an authenticated session", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    render(<TestApp initialEntries={["/guide"]} />);
+
+    expect(await screen.findByRole("heading", { name: "Connect your coding agents in minutes" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Guide sections" })).toBeInTheDocument();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("provides an isolated full-page navigation spy", () => {

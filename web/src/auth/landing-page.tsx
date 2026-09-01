@@ -1,5 +1,5 @@
 import { MoonIcon, SunIcon } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { Brand, GitHubMark, MeshMark } from "@/components/brand";
 import { useTheme } from "@/components/theme-provider";
@@ -15,16 +15,21 @@ export function LandingPage() {
     <main className="landing">
       <header className="landing__header">
         <Brand />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-label={`Use ${resolvedTheme === "light" ? "dark" : "light"} theme`}
-          onClick={() => setTheme(resolvedTheme === "light" ? "dark" : "light")}
-        >
-          {resolvedTheme === "light" ? <SunIcon data-icon="inline-start" /> : <MoonIcon data-icon="inline-start" />}
-          {resolvedTheme === "light" ? "Light" : "Dark"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/guide">Guide</Link>
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-label={`Use ${resolvedTheme === "light" ? "dark" : "light"} theme`}
+            onClick={() => setTheme(resolvedTheme === "light" ? "dark" : "light")}
+          >
+            {resolvedTheme === "light" ? <SunIcon data-icon="inline-start" /> : <MoonIcon data-icon="inline-start" />}
+            {resolvedTheme === "light" ? "Light" : "Dark"}
+          </Button>
+        </div>
       </header>
       <section className="landing__copy">
         <h1>Your agents, working as <span>one.</span></h1>
