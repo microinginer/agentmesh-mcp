@@ -8,7 +8,7 @@
 
 ## 1. Purpose
 
-This document defines the first user-facing AgentMesh hosted control plane: GitHub sign-in, single-owner projects, named MCP connection tokens, a modern web application, operator controls, and deployment at `https://agentmesh.uzmedical.org`.
+This document defines the first user-facing AgentMesh hosted control plane: GitHub sign-in, single-owner projects, named MCP connection tokens, a modern web application, operator controls, and deployment at `https://getagentmesh.dev`.
 
 It extends the existing AgentMesh MCP implementation and the protocol design in `2026-08-30-agentmesh-alpha-design.md`. The MCP tools, agent-session model, message semantics, delivery guarantees, and project isolation defined there remain authoritative unless this document explicitly changes hosted provisioning or project lifecycle behavior.
 
@@ -79,7 +79,7 @@ The repository adds a `web/` application without relocating the working server c
 The hosted deployment uses a confidential GitHub OAuth App with this exact production callback:
 
 ```text
-https://agentmesh.uzmedical.org/auth/github/callback
+https://getagentmesh.dev/auth/github/callback
 ```
 
 The client ID, client secret, callback URL, cookie encryption key, and allowed public origin are supplied through protected deployment secrets. They are never committed, included in images, returned by APIs, or logged.
@@ -250,7 +250,7 @@ Docker Compose runs:
 - `postgres`, accessible only on the private network;
 - a bounded backup job or equivalent host timer.
 
-The production origin is `https://agentmesh.uzmedical.org`. Caddy obtains and renews its certificate. Deployment verifies DNS, certificate identity, HTTPS, `/health`, `/ready`, OAuth start and callback behavior, browser assets, and a real MCP request before declaring success.
+The production origin is `https://getagentmesh.dev`. Caddy obtains and renews its certificate. Deployment verifies DNS, certificate identity, HTTPS, `/health`, `/ready`, OAuth start and callback behavior, browser assets, and a real MCP request before declaring success.
 
 GitHub Actions runs lint, type checking, unit tests, integration tests, web build, server build, and Docker smoke tests before publishing a content-addressed image to GHCR. Deployment records the previous image digest, applies migrations once, replaces the app, waits for readiness, runs smoke checks, and restores the previous image when readiness or smoke validation fails. Database migrations used by a deploy must remain compatible with the previous image for rollback.
 
@@ -287,7 +287,7 @@ Tests never record real OAuth credentials or project secrets in fixtures, snapsh
 
 ### 12.2 Hosted acceptance
 
-The hosted milestone is complete only when all of the following pass at `agentmesh.uzmedical.org`:
+The hosted milestone is complete only when all of the following pass at `getagentmesh.dev`:
 
 1. A real GitHub account signs in over valid HTTPS and reaches the empty onboarding state.
 2. The owner creates one project and two separately named connection tokens.

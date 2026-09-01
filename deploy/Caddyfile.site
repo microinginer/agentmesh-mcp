@@ -1,4 +1,4 @@
-agentmesh.uzmedical.org {
+getagentmesh.dev {
 	encode zstd gzip
 
 	request_body {

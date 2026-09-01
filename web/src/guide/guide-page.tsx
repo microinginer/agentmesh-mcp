@@ -21,7 +21,7 @@ import "./guide.css";
 
 const codexConfig = [
   "[mcp_servers.agentmesh]",
-  'url = "https://agentmesh.uzmedical.org/mcp"',
+  'url = "https://getagentmesh.dev/mcp"',
   'bearer_token_env_var = "AGENTMESH_TOKEN_AGENTMESH_MCP"',
 ].join("\n");
 
@@ -30,7 +30,7 @@ const claudeConfig = [
   '  "mcpServers": {',
   '    "agentmesh": {',
   '      "type": "http",',
-  '      "url": "https://agentmesh.uzmedical.org/mcp",',
+  '      "url": "https://getagentmesh.dev/mcp",',
   '      "headers": {',
   '        "Authorization": "Bearer ${AGENTMESH_TOKEN_AGENTMESH_MCP}"',
   "      }",
