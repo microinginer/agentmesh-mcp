@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Package, publish, deploy, back up, restore-test, and validate AgentMesh at `https://agentmesh.uzmedical.org`, then prove coordination between two physical Codex computers before considering the repository ready for public visibility.
+**Goal:** Package, publish, deploy, back up, restore-test, and validate AgentMesh at `https://getagentmesh.dev`, then prove coordination between two physical Codex computers before considering the repository ready for public visibility.
 
 **Architecture:** Build one immutable image containing Fastify and Vite assets. Run it behind Caddy with PostgreSQL on a private Docker network, deploy verified image digests through a manually approved GitHub Actions workflow, retain the previous digest for rollback, and restore-test backups on the server. Acceptance combines public probes, real GitHub OAuth, observer-only database inspection, and a two-computer MCP exchange.
 
@@ -19,7 +19,7 @@
 
 - Start only after both prerequisite plans pass their full release gates.
 - Expose only Caddy ports 80 and 443 publicly; bind PostgreSQL only to server loopback `127.0.0.1:55433` for the SSH-tunneled observer workflow, and keep the app private.
-- Use exactly `agentmesh.uzmedical.org` and `https://agentmesh.uzmedical.org/auth/github/callback`.
+- Use exactly `getagentmesh.dev` and `https://getagentmesh.dev/auth/github/callback`.
 - Never commit, bake into an image, echo, archive, or upload OAuth secrets, cookie keys, operator configuration, database passwords, connection-token secrets, or private SSH keys.
 - Deploy an immutable digest and retain the last healthy digest for rollback.
 - Run only backward-compatible migrations before switching application traffic.
@@ -327,7 +327,7 @@ git commit -m "ops: add digest deployment and rollback"
 - Modify: `docs/runbooks/hosted-alpha.md`
 - Modify: `deploy/Caddyfile`
 
-**Interfaces:** `pnpm smoke:hosted --base-url https://agentmesh.uzmedical.org [--mcp-token-env AGENTMESH_ACCEPTANCE_TOKEN]` returns redacted JSON with probe/status/duration/TLS expiry and no credentials or message content.
+**Interfaces:** `pnpm smoke:hosted --base-url https://getagentmesh.dev [--mcp-token-env AGENTMESH_ACCEPTANCE_TOKEN]` returns redacted JSON with probe/status/duration/TLS expiry and no credentials or message content.
 
 - [ ] **Step 1: Add failing probe/redaction tests**
 
@@ -349,7 +349,7 @@ At execution time obtain the server SSH host/user from the user. Install Docker 
 
 - [ ] **Step 5: Validate TLS, real OAuth, logout, and rollback**
 
-Run: `pnpm smoke:hosted --base-url https://agentmesh.uzmedical.org`
+Run: `pnpm smoke:hosted --base-url https://getagentmesh.dev`
 
 Use a real browser to sign in through GitHub, verify `/app`, log out, and prove the old cookie no longer authorizes `/api/v1/session`. Trigger one controlled unhealthy-candidate rollback in an approved window. Only then enable HSTS, rebuild/redeploy, and rerun smoke.
 
@@ -394,7 +394,7 @@ Expected: FAIL because validator and fixtures do not exist.
 
 - [ ] **Step 3: Implement validator and runbook**
 
-Create one hosted project, issue `primary-mac` and `second-computer` tokens, and transfer each one-time secret privately only to its target computer. Configure each Codex MCP client for `https://agentmesh.uzmedical.org/mcp` without copying secrets into Git or chat.
+Create one hosted project, issue `primary-mac` and `second-computer` tokens, and transfer each one-time secret privately only to its target computer. Configure each Codex MCP client for `https://getagentmesh.dev/mcp` without copying secrets into Git or chat.
 
 - [ ] **Step 4: Execute real two-computer trial**
 
@@ -430,7 +430,7 @@ Run: `pnpm install --frozen-lockfile && pnpm release:check`
 
 Run: `docker compose -f deploy/compose.production.yaml config --quiet`
 
-Run: `pnpm smoke:hosted --base-url https://agentmesh.uzmedical.org`
+Run: `pnpm smoke:hosted --base-url https://getagentmesh.dev`
 
 Run: `pnpm acceptance:hosted --evidence /absolute/path/to/redacted-evidence.json`
 
