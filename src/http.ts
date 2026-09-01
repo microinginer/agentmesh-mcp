@@ -167,6 +167,7 @@ function isSafeSpaPath(rawUrl: string | undefined): boolean {
   }
   if (decoded.split("/").some((segment) => segment.startsWith("."))) return false;
   return decoded === "/"
+    || decoded === "/guide"
     || decoded === "/app"
     || decoded.startsWith("/app/")
     || decoded === "/ops"
@@ -248,7 +249,7 @@ function sendWebUnavailable(reply: FastifyReply): FastifyReply {
 }
 
 function registerWebProductRoutes(app: FastifyInstance, webAssetsPath: string): void {
-  const spaPaths = ["/", "/app", "/app/*", "/ops", "/ops/*"];
+  const spaPaths = ["/", "/guide", "/app", "/app/*", "/ops", "/ops/*"];
   const rootAssets = {
     "/agentmesh-mark.svg": ["agentmesh-mark.svg", "image/svg+xml"],
     "/apple-touch-icon.png": ["apple-touch-icon.png", "image/png"],
