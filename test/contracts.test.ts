@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MAX_BLACKBOARD_VALUE_BYTES,
   MAX_MESSAGE_BYTES,
+  blackboardGetFactsInputSchema,
+  blackboardSetFactInputSchema,
   listAgentsInputSchema,
   sendInputSchema,
   syncInputSchema,
@@ -132,5 +135,69 @@ describe("AgentMesh public input contracts", () => {
     expect(sendInputSchema.safeParse({ ...base, text: atLimit }).success).toBe(true);
     expect(sendInputSchema.safeParse({ ...base, text: overLimit }).success).toBe(false);
     expect(sendInputSchema.safeParse({ ...base, text: "" }).success).toBe(false);
+  });
+
+  it("validates Blackboard set inputs and measures fact values in UTF-8 bytes", () => {
+    const atLimit = "é".repeat(MAX_BLACKBOARD_VALUE_BYTES / 2);
+    const base = {
+      agent_token: agentToken,
+      namespace: "contracts",
+      key: "users.v2",
+    };
+
+    expect(blackboardSetFactInputSchema.safeParse({
+      ...base,
+      value: atLimit,
+      tags: ["api", "v2"],
+      ttl_seconds: 60,
+      expected_version: 1,
+    }).success).toBe(true);
+    expect(blackboardSetFactInputSchema.safeParse({
+      ...base,
+      value: `${atLimit}é`,
+      tags: [],
+    }).success).toBe(false);
+  });
+
+  it("rejects invalid Blackboard set boundaries", () => {
+    const base = {
+      agent_token: agentToken,
+      namespace: "contracts",
+      key: "users.v2",
+      value: "GET /api/v2/users",
+    };
+
+    for (const value of [
+      { ...base, tags: ["api", "api"] },
+      { ...base, tags: Array.from({ length: 11 }, (_, index) => `tag-${index}`) },
+      { ...base, tags: [], ttl_seconds: 0 },
+      { ...base, tags: [], ttl_seconds: 2_147_483_648 },
+      { ...base, tags: [], expected_version: 0 },
+      { ...base, tags: [], expected_version: 1.5 },
+      { ...base, tags: [], expected_version: 2_147_483_648 },
+      { ...base, tags: [], unexpected: true },
+    ]) {
+      expect(blackboardSetFactInputSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  it("validates Blackboard get filters with non-empty unique arrays", () => {
+    const base = { agent_token: agentToken, namespace: "contracts" };
+
+    expect(blackboardGetFactsInputSchema.safeParse({
+      ...base,
+      keys: ["users.v2"],
+      tags: ["api", "v2"],
+    }).success).toBe(true);
+
+    for (const value of [
+      { ...base, keys: [] },
+      { ...base, tags: [] },
+      { ...base, keys: ["users.v2", "users.v2"] },
+      { ...base, tags: ["api", "api"] },
+      { ...base, unexpected: true },
+    ]) {
+      expect(blackboardGetFactsInputSchema.safeParse(value).success).toBe(false);
+    }
   });
 });

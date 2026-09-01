@@ -7,6 +7,7 @@ import {
   customType,
   foreignKey,
   index,
+  integer,
   jsonb,
   pgSchema,
   pgTable,
@@ -86,6 +87,57 @@ export const projects = pgTable("projects", {
     table.createIdempotencyKey,
   ),
 ]);
+
+export const blackboardEntries = pgTable(
+  "blackboard_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    namespace: varchar("namespace", { length: 64 }).notNull(),
+    key: varchar("key", { length: 128 }).notNull(),
+    value: text("value").notNull(),
+    tags: text("tags").array().notNull().default(sql`ARRAY[]::text[]`),
+    version: integer("version").notNull().default(1),
+    ttlSeconds: integer("ttl_seconds"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdByType: varchar("created_by_type", { length: 16 }).notNull(),
+    createdById: uuid("created_by_id").notNull(),
+    lastUpdatedByType: varchar("last_updated_by_type", { length: 16 }).notNull(),
+    lastUpdatedById: uuid("last_updated_by_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("blackboard_entries_project_namespace_key_unique").on(
+      table.projectId,
+      table.namespace,
+      table.key,
+    ),
+    check("blackboard_entries_version_positive_check", sql`${table.version} > 0`),
+    check(
+      "blackboard_entries_ttl_positive_check",
+      sql`${table.ttlSeconds} IS NULL OR ${table.ttlSeconds} > 0`,
+    ),
+    check(
+      "blackboard_entries_created_by_type_check",
+      sql`${table.createdByType} IN ('agent', 'user')`,
+    ),
+    check(
+      "blackboard_entries_last_updated_by_type_check",
+      sql`${table.lastUpdatedByType} IN ('agent', 'user')`,
+    ),
+    index("blackboard_entries_project_namespace_idx").on(
+      table.projectId,
+      table.namespace,
+    ),
+    index("blackboard_entries_project_expires_at_idx").on(
+      table.projectId,
+      table.expiresAt,
+    ),
+  ],
+);
 
 export const projectTokens = pgTable("project_tokens", {
   id: uuid("id").primaryKey(),
@@ -234,7 +286,7 @@ export const activityEvents = pgTable(
   (table) => [
     check(
       "activity_events_type_check",
-      sql`${table.eventType} IN ('agent.registered', 'agent.registration_failed', 'agent.synced', 'message.sent', 'message.send_failed', 'message.acknowledged', 'mcp.request_failed')`,
+      sql`${table.eventType} IN ('agent.registered', 'agent.registration_failed', 'agent.synced', 'message.sent', 'message.send_failed', 'message.acknowledged', 'blackboard.fact_set', 'blackboard.fact_deleted', 'mcp.request_failed')`,
     ),
     check(
       "activity_events_outcome_check",
@@ -385,6 +437,7 @@ export const observerAuditEvents = observer.view("audit_events").as((query) =>
 );
 
 export type Project = typeof projects.$inferSelect;
+export type BlackboardEntry = typeof blackboardEntries.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type ActivityEvent = typeof activityEvents.$inferSelect;
