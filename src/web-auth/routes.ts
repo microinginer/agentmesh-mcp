@@ -177,28 +177,32 @@ function strictQuery(url: string): ParsedQuery | null {
   return result;
 }
 
-function safeReturnTo(raw: string | undefined): string {
-  if (raw === undefined || raw.length === 0 || raw.length > MAX_QUERY_VALUE_LENGTH
-    || /%(?:2[fF]|5[cC]|0[0-9a-fA-F]|1[0-9a-fA-F]|7[fF])/.test(raw)) return "/app";
-  let decoded = raw;
-  for (let index = 0; index < 4; index += 1) {
-    if (/%(?:2[fF]|5[cC]|0[0-9a-fA-F]|1[0-9a-fA-F]|7[fF])/.test(decoded)) return "/app";
-    const next = decodeComponent(decoded);
-    if (next === null) return "/app";
-    if (next === decoded) break;
-    decoded = next;
-  }
-  if (decoded.includes("%") || decoded.length === 0 || decoded.length > MAX_QUERY_VALUE_LENGTH
-    || decoded.includes("\\") || !decoded.startsWith("/app")
-    || (decoded.length > 4 && !"/?#".includes(decoded[4] ?? ""))) return "/app";
+const returnToRoots = ["/app", "/ops"] as const;
+
+function canonicalReturnTo(candidate: string): string {
+  if (candidate.length === 0 || candidate.length > MAX_QUERY_VALUE_LENGTH) return "/app";
+  const decodedForSafety = decodeComponent(candidate);
+  if (decodedForSafety === null || decodedForSafety.includes("%") || decodedForSafety.includes("\\")) return "/app";
+  const pathEnd = candidate.search(/[?#]/);
+  const rawPath = pathEnd === -1 ? candidate : candidate.slice(0, pathEnd);
+  if (rawPath.includes("%")) return "/app";
+  if (rawPath.split("/").some((segment) => segment === "." || segment === "..")) return "/app";
+  if (!returnToRoots.some((root) => candidate === root || candidate.startsWith(`${root}/`)
+    || candidate.startsWith(`${root}?`) || candidate.startsWith(`${root}#`))) return "/app";
   try {
-    const resolved = new URL(decoded, "http://agentmesh.invalid");
+    const resolved = new URL(candidate, "http://agentmesh.invalid");
     if (resolved.origin !== "http://agentmesh.invalid"
-      || (resolved.pathname !== "/app" && !resolved.pathname.startsWith("/app/"))) return "/app";
+      || !returnToRoots.some((root) => resolved.pathname === root || resolved.pathname.startsWith(`${root}/`))) return "/app";
     return `${resolved.pathname}${resolved.search}${resolved.hash}`;
   } catch {
     return "/app";
   }
+}
+
+export function safeReturnTo(raw: string | undefined): string {
+  if (raw === undefined || raw.length === 0 || raw.length > MAX_QUERY_VALUE_LENGTH) return "/app";
+  const decoded = decodeComponent(raw);
+  return decoded === null ? "/app" : canonicalReturnTo(decoded);
 }
 
 function startReturnTo(request: FastifyRequest): string {
@@ -331,7 +335,7 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
     return reply
       .setCookie(names.session, completed.session.sessionToken, cookieOptions(dependencies.config.secureCookies, SESSION_MAX_AGE_SECONDS))
       .code(303)
-      .header("location", safeReturnTo(completed.returnTo))
+      .header("location", canonicalReturnTo(completed.returnTo))
       .send();
   });
 

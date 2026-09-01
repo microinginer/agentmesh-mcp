@@ -35,6 +35,46 @@ describe("AgentMesh application router", () => {
     render(<TestApp initialEntries={["/app"]} />);
 
     expect(await screen.findByRole("heading", { name: "Sign in to AgentMesh" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Continue with GitHub" })).toHaveAttribute(
+      "href",
+      "/auth/github/start?return_to=%2Fapp",
+    );
+  });
+
+  it("preserves a direct operator route in the GitHub sign-in target", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      error: {
+        code: "AUTH_REQUIRED",
+        message: "Authentication is required",
+        request_id: "operator-router-test-request",
+      },
+    }, { status: 401 })));
+
+    render(<TestApp initialEntries={["/ops/users"]} />);
+
+    expect(await screen.findByRole("heading", { name: "Sign in to AgentMesh" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Continue with GitHub" })).toHaveAttribute(
+      "href",
+      "/auth/github/start?return_to=%2Fops%2Fusers",
+    );
+  });
+
+  it("preserves browser-encoded operator search parameters in the GitHub sign-in target", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      error: {
+        code: "AUTH_REQUIRED",
+        message: "Authentication is required",
+        request_id: "operator-search-router-test-request",
+      },
+    }, { status: 401 })));
+
+    render(<TestApp initialEntries={["/ops/users?search=Jane%20Doe"]} />);
+
+    expect(await screen.findByRole("heading", { name: "Sign in to AgentMesh" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Continue with GitHub" })).toHaveAttribute(
+      "href",
+      "/auth/github/start?return_to=%2Fops%2Fusers%3Fsearch%3DJane%2520Doe",
+    );
   });
 
   it("returns a clear 403 surface to an authenticated non-operator", async () => {

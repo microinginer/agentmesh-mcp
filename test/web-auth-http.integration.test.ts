@@ -341,6 +341,32 @@ describe("web OAuth HTTP routes", () => {
     }
   });
 
+  it("returns to canonical app and operator routes after exactly one URL encoding", async () => {
+    const github = fakeGitHub({ id: "4242", login: "octocat", name: "Octo Cat", avatarUrl: null });
+    const { app } = buildWebApp({ github: github.client });
+    try {
+      for (const target of [
+        "/app",
+        "/app/projects/00000000-0000-4000-8000-000000000001/settings",
+        "/ops",
+        "/ops/users",
+        "/ops/users?search=Jane%20Doe",
+      ]) {
+        const initiated = await start(app, `?return_to=${encodeURIComponent(target)}`);
+        const callback = await app.inject({
+          method: "GET",
+          url: `/auth/github/callback?code=one-use&state=${initiated.state}`,
+          headers: { cookie: initiated.cookie },
+        });
+
+        expect(callback.statusCode).toBe(303);
+        expect(callback.headers.location).toBe(target);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
   it("records one truthful OAuth outcome only after durable session issuance", async () => {
     const github = fakeGitHub({ id: "4242", login: "octocat", name: null, avatarUrl: null });
     const failed = buildWebApp({
@@ -638,8 +664,15 @@ describe("web OAuth HTTP routes", () => {
       for (const target of [
         "https://attacker.example/app",
         "//attacker.example/app",
+        encodeURIComponent("https://attacker.example/app"),
+        encodeURIComponent("//attacker.example/app"),
         "/app%2F..%2Fsecret",
         "/app\\windows",
+        encodeURIComponent("/app\\windows"),
+        encodeURIComponent("/app/../secret"),
+        encodeURIComponent("/ops/../app"),
+        encodeURIComponent("/ops/\nLocation:evil"),
+        encodeURIComponent(encodeURIComponent("/ops/users")),
         "/app/%2e%2e/secret",
         "/app/%25252e%25252e/secret",
         "/app/%252525252e%252525252e/secret",
