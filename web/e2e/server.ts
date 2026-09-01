@@ -79,6 +79,13 @@ const app = buildHttpApp({
   projectService: createProjectService({ db: database.db }),
   host: "127.0.0.1",
   allowedHosts: ["127.0.0.1", "localhost"],
+  rateLimits: {
+    oauthStart: 10_000,
+    ownerRead: 10_000,
+    ownerMutation: 10_000,
+    connectionCreate: 10_000,
+    mcp: 10_000,
+  },
   admin: null,
   logger: { write: () => {} },
   web: {

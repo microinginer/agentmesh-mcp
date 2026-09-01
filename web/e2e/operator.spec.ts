@@ -36,7 +36,7 @@ test("operator browser exposes safe metadata and archives a project", async ({ p
   await expect(page.getByText("3 messages", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Archive project" }).click();
-  const dialog = page.getByRole("dialog", { name: `Archive ${projectName}?` });
+  const dialog = page.getByRole("alertdialog", { name: `Archive ${projectName}?` });
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Confirm archive" }).click();
   await expect(page.getByText("Archived", { exact: true })).toBeVisible();
