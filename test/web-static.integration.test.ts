@@ -50,6 +50,7 @@ describe("AgentMesh web static boundary", () => {
     const app = buildApp();
     try {
       const landing = await app.inject({ method: "GET", url: "/" });
+      const guideRoute = await app.inject({ method: "GET", url: "/guide" });
       const projectRoute = await app.inject({ method: "GET", url: "/app/projects/example" });
       const opsRoute = await app.inject({ method: "GET", url: "/ops/projects/example" });
       const unknownApi = await app.inject({ method: "GET", url: "/api/v1/not-real" });
@@ -57,6 +58,7 @@ describe("AgentMesh web static boundary", () => {
 
       expect(landing.statusCode).toBe(200);
       expect(landing.headers["content-type"]).toContain("text/html");
+      expect(guideRoute.body).toBe(landing.body);
       expect(projectRoute.body).toBe(landing.body);
       expect(opsRoute.body).toBe(landing.body);
       expect(unknownApi.statusCode).toBe(404);
