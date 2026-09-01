@@ -57,6 +57,6 @@ test("stale authentication re-runs GitHub OAuth before a destructive retry", asy
   await callback;
   const refreshedSession = await refreshedSessionResponse.then((response) => response.json() as Promise<{ authenticated_at: string }>);
   expect(new Date(refreshedSession.authenticated_at).getTime()).toBeGreaterThan(new Date(agedSession.authenticated_at).getTime());
-  await expect(page).toHaveURL(new RegExp(`/app/projects/${projectId}(?:/settings)?$`));
+  await expect(page).toHaveURL(`/app/projects/${projectId}/settings`);
   expect((await page.request.get(`/api/v1/projects/${projectId}`)).status()).toBe(200);
 });
