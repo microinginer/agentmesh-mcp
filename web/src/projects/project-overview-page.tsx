@@ -166,7 +166,7 @@ export function ProjectOverviewPage() {
             {data.agents.length === 0 ? (
               <Empty className="inline-empty"><EmptyHeader><EmptyTitle>No agents connected</EmptyTitle><EmptyDescription>Create a connection to bring an agent online.</EmptyDescription></EmptyHeader></Empty>
             ) : (
-              <div className="open-list" role="list" aria-label="Agent presence">
+              <div className="open-list agent-list" role="list" aria-label="Agent presence">
                 {data.agents.map((agent) => (
                   <article key={agent.id} className="agent-row" role="listitem">
                     <span className={`status-orb status-orb--${agent.status}`} />
