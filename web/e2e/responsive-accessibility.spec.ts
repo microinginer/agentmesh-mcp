@@ -39,3 +39,23 @@ test("desktop and mobile dialogs avoid overflow, trap keyboard focus, and restor
   await expect(deleteDialog).toHaveCount(0);
   await expect(deleteTrigger).toBeFocused();
 });
+
+test("mobile navigation keeps its heading above the menu links", async ({ page }) => {
+  const projectId = await prepareOwner(page, "Mobile navigation E2E");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/app/projects/${projectId}`);
+
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  const navigationDialog = page.getByRole("dialog", { name: "AgentMesh navigation" });
+  const description = navigationDialog.getByText("Move between your project workspace and account controls.");
+  const overviewLink = navigationDialog.getByRole("link", { name: "Overview" });
+  await expect(navigationDialog).toBeVisible();
+  await expect(overviewLink).toBeVisible();
+
+  const descriptionBox = await description.boundingBox();
+  const overviewBox = await overviewLink.boundingBox();
+  expect(descriptionBox).not.toBeNull();
+  expect(overviewBox).not.toBeNull();
+  expect(overviewBox!.y).toBeGreaterThanOrEqual(descriptionBox!.y + descriptionBox!.height);
+  await expectNoHorizontalOverflow(page);
+});
