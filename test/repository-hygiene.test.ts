@@ -31,4 +31,9 @@ describe("public repository hygiene", () => {
     const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
     expect(workflow).toContain("pnpm --dir web exec playwright install --with-deps chromium");
   });
+
+  it("gates releases on production dependency audit", () => {
+    const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+    expect(workflow).toContain("pnpm audit --prod");
+  });
 });

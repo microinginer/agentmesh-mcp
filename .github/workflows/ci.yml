@@ -47,3 +47,4 @@ jobs:
       - run: pnpm build
       - run: pnpm test:e2e
       - run: pnpm audit:repository
+      - run: pnpm audit --prod
