@@ -446,7 +446,7 @@ p { margin: 0; }
   .agent-list { display: block; }
   .agent-row { grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; padding: 0.75rem 0; }
   .agent-row > div:nth-of-type(2) { grid-column: 2; }
-  .agent-row > span:last-child { display: none; }
+  .agent-row > .agent-connection { display: none; }
   .activity-row time { align-self: flex-start; padding-top: 0.2rem; }
   .connection-health-row { grid-template-columns: auto minmax(0, 1fr) auto; padding: 0.75rem 0; }
   .connection-health-row > span:nth-last-child(-n + 2) { display: none; }

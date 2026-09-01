@@ -12,14 +12,15 @@ test("agents and activity render deterministic project data", async ({ page }) =
     statuses.map((status) => Math.round(status.getBoundingClientRect().left))
   ));
   expect(new Set(statusStarts).size).toBe(1);
+  await expect(presenceList.getByText("Not assigned").first()).toBeVisible();
 
   await page.setViewportSize({ width: 620, height: 900 });
   const firstAgent = presenceList.getByRole("listitem").first();
-  const mobileTextStarts = await firstAgent.locator(":scope > div").evaluateAll((columns) => (
+  const mobileTextStarts = await firstAgent.locator(":scope > div:visible").evaluateAll((columns) => (
     columns.map((column) => Math.round(column.getBoundingClientRect().left))
   ));
   expect(new Set(mobileTextStarts).size).toBe(1);
-  await expect(firstAgent.locator(":scope > span").last()).toBeHidden();
+  await expect(firstAgent.locator(".agent-connection")).toBeHidden();
   await expectNoHorizontalOverflow(page);
 
   await page.goto(`/app/projects/${projectId}/agents`);
