@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { prepareOwner, seedObservability } from "./helpers";
+import { expectNoHorizontalOverflow, prepareOwner, seedObservability } from "./helpers";
 
 test("agents and activity render deterministic project data", async ({ page }) => {
   const projectId = await prepareOwner(page, "Observability E2E");
@@ -12,6 +12,15 @@ test("agents and activity render deterministic project data", async ({ page }) =
     statuses.map((status) => Math.round(status.getBoundingClientRect().left))
   ));
   expect(new Set(statusStarts).size).toBe(1);
+
+  await page.setViewportSize({ width: 620, height: 900 });
+  const firstAgent = presenceList.getByRole("listitem").first();
+  const mobileTextStarts = await firstAgent.locator(":scope > div").evaluateAll((columns) => (
+    columns.map((column) => Math.round(column.getBoundingClientRect().left))
+  ));
+  expect(new Set(mobileTextStarts).size).toBe(1);
+  await expect(firstAgent.locator(":scope > span").last()).toBeHidden();
+  await expectNoHorizontalOverflow(page);
 
   await page.goto(`/app/projects/${projectId}/agents`);
   await expect(page.getByRole("list", { name: "Project agents" }).getByRole("listitem")).toHaveCount(2);
