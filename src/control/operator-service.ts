@@ -176,25 +176,31 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
     where ${projects.ownerUserId} = ${users.id} and ${projects.status} = 'active'
   )`;
 
+  const safeUserSelection = {
+    id: users.id,
+    github_user_id: oauthIdentities.providerUserId,
+    github_login: oauthIdentities.login,
+    display_name: users.displayName,
+    avatar_url: users.avatarUrl,
+    blocked_at: users.blockedAt,
+    created_at: sql<string>`to_char(${users.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+    updated_at: users.updatedAt,
+    project_count: userProjectCount,
+    active_project_count: userActiveProjectCount,
+  };
+
+  function userQuery() {
+    return db.select(safeUserSelection).from(users).innerJoin(oauthIdentities, and(
+      eq(oauthIdentities.userId, users.id),
+      eq(oauthIdentities.provider, GITHUB_PROVIDER),
+    ));
+  }
+
   async function listUsers(input: AdminListQuery) {
     const query = adminListQuerySchema.parse(input);
     const cursor = query.cursor === undefined ? undefined : decodeAdminCursor(query.cursor);
-    const createdAt = sql<string>`to_char(${users.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
-    const rows = await db.select({
-      id: users.id,
-      github_user_id: oauthIdentities.providerUserId,
-      github_login: oauthIdentities.login,
-      display_name: users.displayName,
-      avatar_url: users.avatarUrl,
-      blocked_at: users.blockedAt,
-      created_at: createdAt,
-      updated_at: users.updatedAt,
-      project_count: userProjectCount,
-      active_project_count: userActiveProjectCount,
-    }).from(users).innerJoin(oauthIdentities, and(
-      eq(oauthIdentities.userId, users.id),
-      eq(oauthIdentities.provider, GITHUB_PROVIDER),
-    )).where(cursor?.kind === "created"
+    const createdAt = safeUserSelection.created_at;
+    const rows = await userQuery().where(cursor?.kind === "created"
       ? or(
           lt(createdAt, cursor.created_at),
           and(eq(createdAt, cursor.created_at), lt(users.id, cursor.id)),
@@ -202,6 +208,14 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
       : undefined)
       .orderBy(desc(users.createdAt), desc(users.id)).limit(query.limit + 1);
     return createdPage(rows.map(publicUser), query.limit);
+  }
+
+  async function getUser(userId: string) {
+    if (!validUuid(userId)) return { found: false as const };
+    const [row] = await userQuery().where(eq(users.id, userId)).limit(1);
+    return row === undefined
+      ? { found: false as const }
+      : { found: true as const, data: publicUser(row) };
   }
 
   const ownerIdentity = oauthIdentities;
@@ -289,6 +303,9 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
     if (!validUuid(input.operatorUserId) || !validUuid(input.targetUserId)) {
       throw new OperatorControlError("INVALID_REQUEST");
     }
+    if (input.operatorUserId === input.targetUserId) {
+      throw new OperatorControlError("USER_STATE_CONFLICT");
+    }
     const now = clock();
     if (!validDate(now)) throw new OperatorControlError("CONTROL_UNAVAILABLE");
     return db.transaction(async (transaction) => {
@@ -359,7 +376,12 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
         archivedAt: now,
         updatedAt: now,
       }).where(and(eq(projects.id, input.projectId), eq(projects.status, "active")))
-        .returning({ id: projects.id, status: projects.status, archivedAt: projects.archivedAt });
+        .returning({
+          id: projects.id,
+          status: projects.status,
+          archivedAt: projects.archivedAt,
+          updatedAt: projects.updatedAt,
+        });
       if (updated === undefined) throw new OperatorControlError("PROJECT_STATE_CONFLICT");
       await audit.record({
         subjectUserId: project.ownerUserId,
@@ -373,6 +395,7 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
         id: updated.id,
         status: updated.status,
         archived_at: updated.archivedAt?.toISOString() ?? null,
+        updated_at: updated.updatedAt.toISOString(),
       };
     });
   }
@@ -449,6 +472,7 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
 
   return {
     listUsers,
+    getUser,
     listProjects,
     getProject,
     blockUser,

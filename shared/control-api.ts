@@ -24,6 +24,67 @@ export const sessionResponseSchema = z.object({
   csrf_token: z.string().min(32).max(512),
 }).strict();
 
+const operatorUserStateSchema = z.object({
+  id: uuid,
+  github_user_id: z.string().min(1).max(64),
+  github_login: z.string().min(1).max(255),
+  display_name: z.string().min(1).max(255),
+  avatar_url: z.url().nullable(),
+  blocked_at: timestamp.nullable(),
+  created_at: timestamp,
+  updated_at: timestamp,
+}).strict();
+
+export const operatorUserMetadataSchema = operatorUserStateSchema.extend({
+  project_count: z.number().int().nonnegative(),
+  active_project_count: z.number().int().nonnegative(),
+}).strict();
+
+export const operatorUserListResponseSchema = z.object({
+  items: z.array(operatorUserMetadataSchema).max(100),
+  next_cursor: z.string().max(684).nullable(),
+}).strict();
+
+export const operatorUserDetailResponseSchema = z.object({ user: operatorUserMetadataSchema }).strict();
+export const operatorUserMutationResponseSchema = z.object({ user: operatorUserStateSchema }).strict();
+
+const operatorProjectOwnerSchema = z.object({
+  id: uuid,
+  github_user_id: z.string().min(1).max(64).nullable(),
+  github_login: z.string().min(1).max(255).nullable(),
+  display_name: z.string().min(1).max(255).nullable(),
+}).strict();
+
+export const operatorProjectMetadataSchema = z.object({
+  id: uuid,
+  name: z.string().min(1).max(100),
+  status: z.enum(["active", "archived"]),
+  archived_at: timestamp.nullable(),
+  created_at: timestamp,
+  updated_at: timestamp,
+  owner: operatorProjectOwnerSchema.nullable(),
+  counts: z.object({
+    agents: z.number().int().nonnegative(),
+    messages: z.number().int().nonnegative(),
+    connections: z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
+
+export const operatorProjectListResponseSchema = z.object({
+  items: z.array(operatorProjectMetadataSchema).max(100),
+  next_cursor: z.string().max(684).nullable(),
+}).strict();
+
+export const operatorProjectDetailResponseSchema = z.object({ project: operatorProjectMetadataSchema }).strict();
+export const operatorProjectArchiveResponseSchema = z.object({
+  project: z.object({
+    id: uuid,
+    status: z.literal("archived"),
+    archived_at: timestamp,
+    updated_at: timestamp,
+  }).strict(),
+}).strict();
+
 export const projectSchema = z.object({
   id: uuid,
   name: z.string().min(1).max(100),
@@ -168,6 +229,10 @@ export const issueConnectionResponseSchema = z.object({
 
 export type ApiErrorResponse = z.infer<typeof apiErrorSchema>;
 export type SessionResponse = z.infer<typeof sessionResponseSchema>;
+export type OperatorUserMetadata = z.infer<typeof operatorUserMetadataSchema>;
+export type OperatorUserListResponse = z.infer<typeof operatorUserListResponseSchema>;
+export type OperatorProjectMetadata = z.infer<typeof operatorProjectMetadataSchema>;
+export type OperatorProjectListResponse = z.infer<typeof operatorProjectListResponseSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type ProjectListResponse = z.infer<typeof projectListResponseSchema>;
 export type OverviewResponse = z.infer<typeof overviewResponseSchema>;

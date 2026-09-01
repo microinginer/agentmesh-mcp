@@ -131,6 +131,20 @@ export function registerOperatorRoutes(
     }
   });
 
+  app.get("/api/v1/ops/users/:userId", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const path = operatorUserPathSchema.safeParse(request.params);
+    if (!path.success || !emptyQuery(request.query)) return invalidRequest(request, reply);
+    try {
+      const user = await service.getUser(path.data.userId);
+      return user.found
+        ? reply.send({ user: user.data })
+        : sendWebHttpError(request, reply, 404, "USER_NOT_FOUND");
+    } catch (error) {
+      return operatorFailure(error, request, reply);
+    }
+  });
+
   app.get("/api/v1/ops/projects/:projectId", readOptions, async (request, reply) => {
     if (request.webSession === null) return;
     const path = projectPathSchema.safeParse(request.params);

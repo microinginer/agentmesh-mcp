@@ -208,6 +208,7 @@ describe("metadata-only operator HTTP", () => {
 
       for (const path of [
         "/api/v1/ops/users?limit=100",
+        `/api/v1/ops/users/${fixture.target.id}`,
         "/api/v1/ops/projects?limit=100",
         `/api/v1/ops/projects/${fixture.projectId}`,
       ]) {
@@ -338,6 +339,27 @@ describe("metadata-only operator HTTP", () => {
     }
   });
 
+  it("rejects self-blocking so an operator cannot revoke their own recovery path", async () => {
+    const fixture = await buildOperatorFixture();
+    try {
+      const response = await fixture.app.inject({
+        method: "POST",
+        url: `/api/v1/ops/users/${fixture.operator.id}/block`,
+        headers: mutationHeaders(fixture.operatorAuth),
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ error: { code: "USER_STATE_CONFLICT" } });
+      const operatorSessionToken = fixture.operatorAuth.cookie.slice("agentmesh_session=".length);
+      expect(await fixture.sessionService.authenticate(operatorSessionToken)).not.toBeNull();
+      const [operator] = await database.db.select({ blockedAt: users.blockedAt }).from(users)
+        .where(eq(users.id, fixture.operator.id));
+      expect(operator?.blockedAt).toBeNull();
+    } finally {
+      await fixture.app.close();
+    }
+  });
+
   it("archives through the operator route under the project lock", async () => {
     const fixture = await buildOperatorFixture();
     try {
@@ -349,7 +371,7 @@ describe("metadata-only operator HTTP", () => {
       expect(archived.statusCode).toBe(200);
       expect(archived.headers["cache-control"]).toBe("no-store");
       expect(archived.json()).toMatchObject({
-        project: { id: fixture.projectId, status: "archived", archived_at: fixedNow },
+        project: { id: fixture.projectId, status: "archived", archived_at: fixedNow, updated_at: fixedNow },
       });
       const [audit] = await database.db.select().from(auditEvents).where(
         eq(auditEvents.eventType, "operator.project_archived"),
