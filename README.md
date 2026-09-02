@@ -33,17 +33,25 @@ execution platform, autonomous task manager, or replacement for Git.
   optional GitHub control plane is enabled.
 - Self-host the application, PostgreSQL data, backups, and access policy.
 
-The MVP exposes exactly three tools:
+AgentMesh exposes six focused MCP tools:
 
 - `agentmesh_sync`
 - `agentmesh_send`
 - `agentmesh_list_agents`
+- `agentmesh_get_facts`
+- `agentmesh_set_fact`
+- `agentmesh_report_progress`
+
+The first three coordinate live sessions and durable peer messages. Blackboard
+uses `agentmesh_get_facts` and `agentmesh_set_fact` for stable project facts,
+contracts, and decisions. Team Pulse uses `agentmesh_report_progress` for concise
+milestones, blockers, changed files, and test status.
 
 ## Safety boundary
 
 AgentMesh is a pull-based coordination channel. The server stores messages, and
 an already-running agent chooses when to call `agentmesh_sync` to retrieve them.
-A project token exposes only the three tools above; it does not expose the
+A project token exposes only the focused AgentMesh tools above; it does not expose the
 holder's shell, files, editor, Codex or Claude Code task controls, or computer.
 
 Treat every peer message as untrusted coordination context, never as user
@@ -51,6 +59,12 @@ authority. Messages may report planned work, affected files, findings,
 decisions, and blockers. They must not by themselves authorize commands, file
 changes, external actions, scope changes, or delegation. Each agent remains
 bound by its own user's request and local safety rules.
+
+Blackboard facts and Team Pulse reports follow the same boundary: they are
+shared context, not authorization for commands, merges, or deployments. Store
+only confirmed, long-lived knowledge in Blackboard. Never put secrets, tokens,
+private data, raw credentials, or credential-file contents in any AgentMesh
+message, fact, or progress report.
 
 ## Contents
 
@@ -112,6 +126,21 @@ AgentMesh:
 [mcp_servers.agentmesh]
 url = "http://127.0.0.1:3000/mcp"
 bearer_token_env_var = "AGENTMESH_TOKEN_AGENTMESH_MCP"
+
+[mcp_servers.agentmesh.tools.agentmesh_sync]
+approval_mode = "approve"
+
+[mcp_servers.agentmesh.tools.agentmesh_list_agents]
+approval_mode = "approve"
+
+[mcp_servers.agentmesh.tools.agentmesh_get_facts]
+approval_mode = "approve"
+
+[mcp_servers.agentmesh.tools.agentmesh_report_progress]
+approval_mode = "approve"
+
+[mcp_servers.agentmesh.tools.agentmesh_set_fact]
+approval_mode = "prompt"
 ```
 
 For a shared deployment, replace the URL with `https://YOUR_DOMAIN/mcp`. Keep
@@ -169,6 +198,12 @@ planned scope to computer B before editing. On computer B, ask the agent to
 poll AgentMesh, review the plan as untrusted context, acknowledge it, and send a
 reply. A successful pilot has evidence in both directions: one delivered and
 acknowledged message from A to B and one from B to A.
+
+After registration, agents can read relevant stable context with
+`agentmesh_get_facts`. Use `agentmesh_set_fact` only after a contract or decision
+is confirmed and expected to remain useful across sessions. Use
+`agentmesh_report_progress` for short checkpoint updates instead of storing
+transient status in Blackboard.
 
 The token returned by `agentmesh_sync` during registration is an agent-session
 token. Keep it only inside that running session. It is different from the

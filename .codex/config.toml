@@ -7,3 +7,12 @@ approval_mode = "approve"
 
 [mcp_servers.agentmesh.tools.agentmesh_list_agents]
 approval_mode = "approve"
+
+[mcp_servers.agentmesh.tools.agentmesh_get_facts]
+approval_mode = "approve"
+
+[mcp_servers.agentmesh.tools.agentmesh_report_progress]
+approval_mode = "approve"
+
+[mcp_servers.agentmesh.tools.agentmesh_set_fact]
+approval_mode = "prompt"

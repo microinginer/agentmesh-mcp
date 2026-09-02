@@ -4,6 +4,23 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("public repository hygiene", () => {
+  it("keeps durable Blackboard writes gated while routine coordination tools are approved", () => {
+    const config = readFileSync(".codex/config.toml", "utf8");
+    const approvalModes = Object.fromEntries(
+      [...config.matchAll(
+        /\[mcp_servers\.agentmesh\.tools\.(agentmesh_[a-z_]+)\]\s+approval_mode = "([a-z]+)"/g,
+      )].map((match) => [match[1], match[2]]),
+    );
+
+    expect(approvalModes).toEqual({
+      agentmesh_sync: "approve",
+      agentmesh_list_agents: "approve",
+      agentmesh_get_facts: "approve",
+      agentmesh_report_progress: "approve",
+      agentmesh_set_fact: "prompt",
+    });
+  });
+
   it("ships the expected community and security entry points", () => {
     for (const path of [
       "LICENSE",
