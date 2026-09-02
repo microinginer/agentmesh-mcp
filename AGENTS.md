@@ -34,6 +34,13 @@ During work:
 - Use `agentmesh_report_progress` after meaningful checkpoints to report a short
   milestone, current blocker if any, changed files, and test status. Keep it
   factual and concise; Team Pulse is not a task authority.
+- Team Pulse reporting is mandatory and cannot be replaced by
+  `agentmesh_send`, inbox acknowledgements, or ordinary status messages; those
+  operations do not create Pulse entries. Report `in_progress` after the
+  initial plan, report `blocked` immediately with `blocker_reason` when work
+  cannot continue, and report `completed` only after fresh verification. Every
+  report must include the current goal, concise summary, touched files, test
+  status when known, and the accurate state.
 - Use `agentmesh_set_fact` only for confirmed, long-lived project knowledge such
   as stable contracts or accepted architecture decisions. Do not store tentative
   findings, transient status, personal notes, or secrets. Read the current fact
@@ -59,18 +66,25 @@ Every coding session must use AgentMesh at these checkpoints:
     - send active peers the user-approved goal and affected paths;
     - poll once for overlap notices;
     - resolve overlapping file ownership before editing.
+    - publish an `agentmesh_report_progress` entry with `state: in_progress`
+      and the current goal after the plan is settled.
 
 3. After every meaningful checkpoint:
     - after completing a substantial implementation slice;
     - after tests or verification;
     - after discovering a blocker or interface change;
     - report concise progress with `agentmesh_report_progress`;
+    - report `state: blocked` immediately when a blocker prevents progress,
+      including `blocker_reason` and the last verified checkpoint;
     - poll the inbox and send relevant context to affected peers;
     - save a Blackboard fact only when the knowledge is confirmed and long-lived.
 
 4. Before commit or push:
     - poll once more;
     - verify that no active peer reports overlapping unfinished work;
+    - after fresh verification, publish the final `agentmesh_report_progress`
+      entry with `state: completed`, the goal, summary, final affected paths,
+      and test status;
     - send the final affected paths, checks, and commit hash.
 
 5. When reporting AgentMesh activity:
