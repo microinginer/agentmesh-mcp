@@ -89,6 +89,7 @@ export const projectSchema = z.object({
   id: uuid,
   name: z.string().min(1).max(100),
   description: z.string().max(500).nullable(),
+  can_edit: z.boolean().default(true),
   status: z.enum(["active", "archived"]),
   archived_at: timestamp.nullable(),
   created_at: timestamp,

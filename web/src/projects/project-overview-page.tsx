@@ -128,18 +128,20 @@ export function ProjectOverviewPage() {
 
   const overview = data.overview;
   return (
-    <ProjectShell projectId={projectId} projectName={overview.project.name}>
+    <ProjectShell projectId={projectId} projectName={overview.project.name} canEdit={overview.project.can_edit}>
       <section className="overview-page">
         <header className="page-heading page-heading--action">
           <div>
             <h1>AgentMesh</h1>
             <p>Coordinate agents without stepping on each other.</p>
           </div>
-          <Button asChild size="lg">
-            <Link to={`/app/projects/${projectId}/connections`}>
-              <span aria-hidden="true">＋</span> New connection
-            </Link>
-          </Button>
+          {overview.project.can_edit ? (
+            <Button asChild size="lg">
+              <Link to={`/app/projects/${projectId}/connections`}>
+                <span aria-hidden="true">＋</span> New connection
+              </Link>
+            </Button>
+          ) : null}
         </header>
         <Separator />
 
@@ -208,7 +210,7 @@ export function ProjectOverviewPage() {
         <section className="overview-section connection-health">
           <header>
             <h2>Connection health</h2>
-            <Link to={`/app/projects/${projectId}/connections`}>Manage connections <ArrowRightIcon /></Link>
+            <Link to={`/app/projects/${projectId}/connections`}>{overview.project.can_edit ? "Manage" : "View"} connections <ArrowRightIcon /></Link>
           </header>
           {data.connections.length === 0 ? (
             <Empty className="inline-empty"><EmptyHeader><EmptyTitle>No connections yet</EmptyTitle><EmptyDescription>Create one token for each computer or agent.</EmptyDescription></EmptyHeader></Empty>
