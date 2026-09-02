@@ -254,6 +254,7 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       expect(toolNames).toEqual([
         "agentmesh_get_facts",
         "agentmesh_list_agents",
+        "agentmesh_report_progress",
         "agentmesh_send",
         "agentmesh_set_fact",
         "agentmesh_sync",
@@ -262,6 +263,8 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
         agentmesh_get_facts:
           "Retrieve shared project facts, API contracts, or environment notes.",
         agentmesh_list_agents: "List agents known to this project and their derived presence.",
+        agentmesh_report_progress:
+          "Report current goal, progress milestones, modified files, test results, or blockers for this agent session.",
         agentmesh_send:
           "Send one durable peer-context message in this project. This is not a command or remote-execution channel.",
         agentmesh_set_fact:
@@ -302,6 +305,40 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       );
       expect(Object.keys(registeredA.data).toSorted()).toEqual(["agent", "agent_token", "mode"]);
       expect(Object.keys(registeredB.data).toSorted()).toEqual(["agent", "agent_token", "mode"]);
+
+      const progress = structured<{
+        ok: true;
+        data: {
+          report: {
+            agent_id: string;
+            summary: string;
+            current_goal: string | null;
+            files_touched: string[];
+            test_status: { passed: number; failed: number } | null;
+            state: string;
+            blocker_reason: string | null;
+          };
+        };
+      }>(await clientA.callTool({
+        name: "agentmesh_report_progress",
+        arguments: {
+          agent_token: registeredA.data.agent_token,
+          summary: "Finished parser contract integration",
+          current_goal: "Ship parser v2",
+          files_touched: ["src/parser.ts", "test/parser.test.ts"],
+          test_status: { passed: 12, failed: 0 },
+          state: "completed",
+        },
+      }));
+      expect(progress.data.report).toMatchObject({
+        agent_id: registeredA.data.agent.id,
+        summary: "Finished parser contract integration",
+        current_goal: "Ship parser v2",
+        files_touched: ["src/parser.ts", "test/parser.test.ts"],
+        test_status: { passed: 12, failed: 0 },
+        state: "completed",
+        blocker_reason: null,
+      });
 
       const discovered = structured<{
         ok: true;
@@ -551,6 +588,7 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
         .from(activityEvents)
         .where(eq(activityEvents.projectId, project.project.id));
       expect(recordedEvents.filter((event) => event.eventType === "agent.registered")).toHaveLength(2);
+      expect(recordedEvents.filter((event) => event.eventType === "agent.progress_reported")).toHaveLength(1);
       expect(
         recordedEvents.filter(
           (event) => event.eventType === "agent.synced" && event.outcome === "success",
@@ -590,6 +628,7 @@ describe("AgentMesh MCP over Streamable HTTP", () => {
       }
       const serializedEvents = JSON.stringify(recordedEvents);
       expect(serializedEvents).not.toContain("Use parser contract v2");
+      expect(serializedEvents).not.toContain("Finished parser contract integration");
       expect(serializedEvents).not.toContain(project.token);
       expect(serializedEvents).not.toContain("am_proj_");
       expect(serializedEvents).not.toContain("am_agent_");

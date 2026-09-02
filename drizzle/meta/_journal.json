@@ -64,6 +64,13 @@
       "when": 1788303499271,
       "tag": "0008_useful_the_hunter",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788307092898,
+      "tag": "0009_team_pulse",
+      "breakpoints": true
     }
   ]
 }
