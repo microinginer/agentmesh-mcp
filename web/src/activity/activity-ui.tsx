@@ -37,7 +37,7 @@ export function ActivityFrame({
     return <section className="state-page"><h1>{title} unavailable</h1><p>{error ?? "Project was not found."}</p></section>;
   }
   return (
-    <ProjectShell projectId={project.id} projectName={project.name}>
+    <ProjectShell projectId={project.id} projectName={project.name} canEdit={project.can_edit}>
       <section className="activity-page">
         <header className="page-heading"><h1>{title}</h1><p>{description}</p></header>
         {stale ? <Alert><AlertTitle>Reconnecting</AlertTitle><AlertDescription>Showing the last successful update while AgentMesh reconnects.</AlertDescription></Alert> : null}

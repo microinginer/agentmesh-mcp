@@ -46,6 +46,17 @@ export function ProjectSettings() {
   if (project === null && error === null) return <section className="settings-page settings-page--loading"><Skeleton className="h-10 w-60" /><Skeleton className="h-64 w-full" /></section>;
   if (project === null) return <section className="state-page"><h1>Settings unavailable</h1><p>{error}</p></section>;
 
+  if (!project.can_edit) {
+    return (
+      <ProjectShell projectId={project.id} projectName={project.name} canEdit={false}>
+        <section className="state-page">
+          <h1>Read-only project</h1>
+          <p>You can view {project.name}, but only its owner can change project settings.</p>
+        </section>
+      </ProjectShell>
+    );
+  }
+
   const archive = async () => {
     setBusy(true);
     try {

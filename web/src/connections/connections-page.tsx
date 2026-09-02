@@ -257,25 +257,27 @@ export function ConnectionsPage() {
   }
 
   return (
-    <ProjectShell projectId={projectId} projectName={project.name}>
+    <ProjectShell projectId={projectId} projectName={project.name} canEdit={project.can_edit}>
       <section className="connections-page">
         <header className="page-heading page-heading--action">
-          <div><h1>Connections</h1><p>Create a separate project token for each computer or agent.</p></div>
-          <ConnectionCreator
-            api={api}
-            projectId={projectId}
-            onIssued={issued}
-            onRevoke={revoke}
-          />
+          <div><h1>Connections</h1><p>{project.can_edit ? "Create a separate project token for each computer or agent." : "View the computers and agents connected to this shared project."}</p></div>
+          {project.can_edit ? (
+            <ConnectionCreator
+              api={api}
+              projectId={projectId}
+              onIssued={issued}
+              onRevoke={revoke}
+            />
+          ) : null}
         </header>
         {connections.length === 0 ? (
           <Empty className="workspace-empty workspace-empty--bordered">
-            <EmptyHeader><EmptyTitle>No connections yet</EmptyTitle><EmptyDescription>Create a separate token for your first computer or agent.</EmptyDescription></EmptyHeader>
+            <EmptyHeader><EmptyTitle>No connections yet</EmptyTitle><EmptyDescription>{project.can_edit ? "Create a separate token for your first computer or agent." : "The project owner has not created any connections yet."}</EmptyDescription></EmptyHeader>
           </Empty>
         ) : (
-          <div className="connections-list" role="list" aria-label="Connections">
+          <div className={cn("connections-list", !project.can_edit && "connections-list--readonly")} role="list" aria-label="Connections">
             <div className="connections-list__header" aria-hidden="true">
-              <span>{connections.length} connections</span><span>Status</span><span>Created</span><span>Expires</span><span>Last used</span><span>Actions</span>
+              <span>{connections.length} connections</span><span>Status</span><span>Created</span><span>Expires</span><span>Last used</span>{project.can_edit ? <span>Actions</span> : null}
             </div>
             {connections.map((connection) => (
               <article key={connection.id} className="connection-row" role="listitem" aria-label={`${connection.label} connection`}>
@@ -287,16 +289,18 @@ export function ConnectionsPage() {
                 <time dateTime={connection.created_at}>{new Date(connection.created_at).toLocaleDateString()}</time>
                 <span>{connection.expires_at === null ? "No expiry" : new Date(connection.expires_at).toLocaleDateString()}</span>
                 <span>{connection.last_used_at === null ? "Never used" : new Date(connection.last_used_at).toLocaleString()}</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={connection.status === "revoked"}
-                  aria-label={`Revoke ${connection.label}`}
-                  onClick={() => void revoke(connection)}
-                >
-                  {connection.status === "revoked" ? "Revoked" : "Revoke"}
-                </Button>
+                {project.can_edit ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={connection.status === "revoked"}
+                    aria-label={`Revoke ${connection.label}`}
+                    onClick={() => void revoke(connection)}
+                  >
+                    {connection.status === "revoked" ? "Revoked" : "Revoke"}
+                  </Button>
+                ) : null}
               </article>
             ))}
           </div>
