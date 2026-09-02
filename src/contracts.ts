@@ -246,6 +246,44 @@ export const listAgentsOutputSchema = z.union([
   toolErrorSchema,
 ]);
 
+export const testStatusSchema = z.object({
+  passed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative().optional(),
+}).strict();
+
+export const progressStateSchema = z.enum(["in_progress", "blocked", "completed", "idle"]);
+
+export const reportProgressInputSchema = z.object({
+  agent_token: agentTokenSchema,
+  summary: z.string().min(1).max(2_000),
+  current_goal: z.string().max(500).optional(),
+  files_touched: z.array(z.string().max(256)).max(100).default([]),
+  test_status: testStatusSchema.optional(),
+  state: progressStateSchema.default("in_progress"),
+  blocker_reason: z.string().max(1_000).optional(),
+}).strict();
+
+export const agentProgressReportSchema = z.object({
+  id: uuidV4Schema,
+  agent_id: uuidV4Schema,
+  summary: z.string(),
+  current_goal: z.string().nullable(),
+  files_touched: z.array(z.string()),
+  test_status: testStatusSchema.nullable(),
+  state: progressStateSchema,
+  blocker_reason: z.string().nullable(),
+  created_at: z.string(),
+}).strict();
+
+export const reportProgressOutputSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    data: z.object({ report: agentProgressReportSchema }).strict(),
+  }).strict(),
+  toolErrorSchema,
+]);
+
 export const blackboardSetFactOutputSchema = z.union([
   z
     .object({
@@ -271,6 +309,7 @@ export type RegisterInput = Extract<SyncInput, { mode: "register" }>;
 export type PollInput = Extract<SyncInput, { mode: "poll" }>;
 export type SendInput = z.output<typeof sendInputSchema>;
 export type ListAgentsInput = z.output<typeof listAgentsInputSchema>;
+export type ReportProgressInput = z.output<typeof reportProgressInputSchema>;
 export type BlackboardSetFactInput = z.output<typeof blackboardSetFactInputSchema>;
 export type BlackboardGetFactsInput = z.output<typeof blackboardGetFactsInputSchema>;
 export type BlackboardFact = z.output<typeof blackboardFactSchema>;

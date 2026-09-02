@@ -32,12 +32,13 @@ describe("PostgreSQL tenant invariants", () => {
       `SELECT table_name
          FROM information_schema.tables
         WHERE table_schema = 'public'
-          AND table_name IN ('users', 'oauth_identities', 'web_sessions', 'audit_events', 'projects', 'project_tokens', 'agents', 'messages', 'activity_events')
+          AND table_name IN ('users', 'oauth_identities', 'web_sessions', 'audit_events', 'projects', 'project_tokens', 'agents', 'messages', 'activity_events', 'agent_progress_reports')
         ORDER BY table_name`,
     );
 
     expect(result.rows.map((row) => row.table_name)).toEqual([
       "activity_events",
+      "agent_progress_reports",
       "agents",
       "audit_events",
       "messages",

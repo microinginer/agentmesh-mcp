@@ -5,6 +5,7 @@ import {
   ChevronDownIcon,
   FolderKanbanIcon,
   FolderPlusIcon,
+  FlameIcon,
   LayoutDashboardIcon,
   LinkIcon,
   LogOutIcon,
@@ -119,6 +120,7 @@ function Navigation({ projectId }: { projectId?: string }) {
   const base = `/app/projects/${projectId}`;
   const items = [
     { to: base, label: "Overview", icon: LayoutDashboardIcon, exact: true },
+    { to: `${base}/pulse`, label: "Team Pulse", icon: FlameIcon },
     { to: `${base}/agents`, label: "Agents", icon: BotIcon },
     { to: `${base}/messages`, label: "Messages", icon: MessageCircleIcon },
     { to: `${base}/activity`, label: "Activity", icon: ActivityIcon },
@@ -140,7 +142,7 @@ function Navigation({ projectId }: { projectId?: string }) {
 }
 
 function projectDestination(pathname: string, projectId: string): string {
-  const match = pathname.match(/^\/app\/projects\/[^/]+(\/(?:agents|messages|activity|connections|settings))?\/?$/);
+  const match = pathname.match(/^\/app\/projects\/[^/]+(\/(?:pulse|agents|messages|activity|connections|settings))?\/?$/);
   return `/app/projects/${projectId}${match?.[1] ?? ""}`;
 }
 

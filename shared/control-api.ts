@@ -227,6 +227,66 @@ export const issueConnectionResponseSchema = z.object({
   }
 });
 
+export const pulseTestStatusSchema = z.object({
+  passed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative().optional(),
+}).strict();
+
+export const pulseProgressReportSchema = z.object({
+  summary: z.string(),
+  state: z.enum(["in_progress", "blocked", "completed", "idle"]),
+  blocker_reason: z.string().nullable(),
+  test_status: pulseTestStatusSchema.nullable(),
+  files_touched: z.array(z.string()),
+  reported_at: timestamp,
+}).strict();
+
+export const pulseHistoryItemSchema = z.object({
+  id: z.string(),
+  time: z.string(),
+  summary: z.string(),
+  state: z.enum(["in_progress", "blocked", "completed", "idle"]),
+  blocker_reason: z.string().nullable(),
+}).strict();
+
+export const pulseAgentSchema = z.object({
+  agent_id: uuid,
+  name: z.string(),
+  client: z.string(),
+  status: z.enum(["online", "idle", "offline"]),
+  last_seen_at: timestamp,
+  current_goal: z.string().nullable(),
+  latest_progress: pulseProgressReportSchema.nullable(),
+  history: z.array(pulseHistoryItemSchema),
+}).strict();
+
+export const pulseConnectionSchema = z.object({
+  connection_id: uuid.nullable(),
+  label: z.string(),
+  agents: z.array(pulseAgentSchema),
+}).strict();
+
+export const pulseDeveloperSchema = z.object({
+  user_id: uuid.nullable(),
+  display_name: z.string(),
+  avatar_url: z.string().nullable(),
+  connections: z.array(pulseConnectionSchema),
+}).strict();
+
+export const dailyPulseResponseSchema = z.object({
+  ok: z.literal(true),
+  date: z.string(),
+  summary: z.object({
+    active_agents_count: z.number().int().nonnegative(),
+    total_sessions_count: z.number().int().nonnegative(),
+    active_blockers_count: z.number().int().nonnegative(),
+    unique_files_touched_count: z.number().int().nonnegative(),
+    unique_files_touched: z.array(z.string()),
+  }).strict(),
+  developers: z.array(pulseDeveloperSchema),
+}).strict();
+
 export type ApiErrorResponse = z.infer<typeof apiErrorSchema>;
 export type SessionResponse = z.infer<typeof sessionResponseSchema>;
 export type OperatorUserMetadata = z.infer<typeof operatorUserMetadataSchema>;
@@ -246,3 +306,7 @@ export type MessageDetail = z.infer<typeof messageDetailSchema>;
 export type Connection = z.infer<typeof connectionSchema>;
 export type ConnectionListResponse = z.infer<typeof connectionListResponseSchema>;
 export type IssueConnectionResponse = z.infer<typeof issueConnectionResponseSchema>;
+export type DailyPulseResponse = z.infer<typeof dailyPulseResponseSchema>;
+export type PulseDeveloperSummary = z.infer<typeof pulseDeveloperSchema>;
+export type PulseConnectionSummary = z.infer<typeof pulseConnectionSchema>;
+export type PulseAgentSummary = z.infer<typeof pulseAgentSchema>;

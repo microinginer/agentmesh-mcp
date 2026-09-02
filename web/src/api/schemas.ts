@@ -17,12 +17,14 @@ export {
   projectListResponseSchema,
   projectResponseSchema,
   sessionResponseSchema,
+  dailyPulseResponseSchema,
 } from "../../../shared/control-api";
 
 export type {
   ActivityEvent,
   Agent,
   Connection,
+  DailyPulseResponse,
   EventListResponse,
   IssueConnectionResponse,
   MessageDetail,
@@ -35,5 +37,8 @@ export type {
   OverviewResponse,
   Project,
   ProjectListResponse,
+  PulseAgentSummary,
+  PulseConnectionSummary,
+  PulseDeveloperSummary,
   SessionResponse,
 } from "../../../shared/control-api";

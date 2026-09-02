@@ -286,7 +286,7 @@ export const activityEvents = pgTable(
   (table) => [
     check(
       "activity_events_type_check",
-      sql`${table.eventType} IN ('agent.registered', 'agent.registration_failed', 'agent.synced', 'message.sent', 'message.send_failed', 'message.acknowledged', 'blackboard.fact_set', 'blackboard.fact_deleted', 'mcp.request_failed')`,
+      sql`${table.eventType} IN ('agent.registered', 'agent.registration_failed', 'agent.synced', 'agent.progress_reported', 'message.sent', 'message.send_failed', 'message.acknowledged', 'blackboard.fact_set', 'blackboard.fact_deleted', 'mcp.request_failed')`,
     ),
     check(
       "activity_events_outcome_check",
@@ -325,6 +325,36 @@ export const activityEvents = pgTable(
 );
 
 export const observer = pgSchema("observer");
+
+export interface TestStatusReport {
+  passed: number;
+  failed: number;
+  skipped?: number | undefined;
+}
+
+export const agentProgressStates = ["in_progress", "blocked", "completed", "idle"] as const;
+export type AgentProgressState = (typeof agentProgressStates)[number];
+
+export const agentProgressReports = pgTable(
+  "agent_progress_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    summary: text("summary").notNull(),
+    currentGoal: text("current_goal"),
+    filesTouched: text("files_touched").array().notNull().default(sql`ARRAY[]::text[]`),
+    testStatus: jsonb("test_status").$type<TestStatusReport>(),
+    state: varchar("state", { length: 24 }).notNull().default("in_progress"),
+    blockerReason: text("blocker_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("agent_progress_reports_state_check", sql`${table.state} IN ('in_progress', 'blocked', 'completed', 'idle')`),
+    index("progress_project_created_idx").on(table.projectId, table.createdAt.desc()),
+    index("progress_agent_created_idx").on(table.agentId, table.createdAt.desc()),
+  ],
+);
 
 export const observerProjects = observer.view("projects").as((query) =>
   query
@@ -395,6 +425,23 @@ export const observerActivityEvents = observer.view("activity_events").as((query
     .from(activityEvents),
 );
 
+export const observerProgressReports = observer.view("progress_reports").as((query) =>
+  query
+    .select({
+      id: agentProgressReports.id,
+      projectId: agentProgressReports.projectId,
+      agentId: agentProgressReports.agentId,
+      summary: agentProgressReports.summary,
+      currentGoal: agentProgressReports.currentGoal,
+      filesTouched: agentProgressReports.filesTouched,
+      testStatus: agentProgressReports.testStatus,
+      state: agentProgressReports.state,
+      blockerReason: agentProgressReports.blockerReason,
+      createdAt: agentProgressReports.createdAt,
+    })
+    .from(agentProgressReports),
+);
+
 export const observerUsers = observer.view("users").as((query) =>
   query
     .select({
@@ -441,4 +488,5 @@ export type BlackboardEntry = typeof blackboardEntries.$inferSelect;
 export type Agent = typeof agents.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type ActivityEvent = typeof activityEvents.$inferSelect;
+export type AgentProgressReport = typeof agentProgressReports.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;

@@ -18,6 +18,8 @@ import {
   blackboardSetFactOutputSchema,
   listAgentsInputSchema,
   listAgentsOutputSchema,
+  reportProgressInputSchema,
+  reportProgressOutputSchema,
   sendInputSchema,
   sendOutputSchema,
   syncInputSchema,
@@ -28,6 +30,7 @@ import type { AgentMeshDatabase } from "../db/client.js";
 import { AgentMeshError } from "../errors.js";
 import type { SafeLogger } from "../logging.js";
 import { createMessageService } from "../messages/service.js";
+import { createPulseService } from "../pulse/service.js";
 
 interface McpHandlerDependencies {
   db: AgentMeshDatabase;
@@ -123,6 +126,7 @@ export function buildMcpHandler({ db, signingKey, logger }: McpHandlerDependenci
   const agentService = createAgentService({ db, signingKey, activity });
   const messageService = createMessageService({ db, agentService, activity });
   const blackboardService = createBlackboardService({ db, agentService, activity });
+  const pulseService = createPulseService({ db, agentService, activity });
 
   return createMcpHandler(({ authInfo }) => {
     const authenticatedProjectId = authInfo?.clientId;
@@ -190,6 +194,30 @@ export function buildMcpHandler({ db, signingKey, logger }: McpHandlerDependenci
           activity,
           logger,
           domainFailureRecordedByService: true,
+        });
+      },
+    );
+
+    server.registerTool(
+      "agentmesh_report_progress",
+      {
+        description:
+          "Report current goal, progress milestones, modified files, test results, or blockers for this agent session.",
+        inputSchema: reportProgressInputSchema,
+        outputSchema: reportProgressOutputSchema,
+      },
+      async (input) => {
+        const context = { requestId: randomUUID() };
+        const projectId = requireProjectId();
+        return runTool(async () => ({
+          ok: true,
+          data: await pulseService.recordProgress(projectId, input, context),
+        }), {
+          projectId,
+          requestId: context.requestId,
+          activity,
+          logger,
+          domainFailureRecordedByService: false,
         });
       },
     );

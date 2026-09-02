@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   agentListResponseSchema,
+  dailyPulseResponseSchema,
   eventListResponseSchema,
   overviewResponseSchema,
 } from "../shared/control-api.js";
@@ -17,6 +18,7 @@ import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import {
   activityEvents,
+  agentProgressReports,
   agents,
   messages,
   oauthIdentities,
@@ -342,6 +344,17 @@ describe("owner read HTTP routes", () => {
       { userId: fixture.ownerA, provider: "github", providerUserId: "7001", login: "owner-a" },
       { userId: fixture.ownerB, provider: "github", providerUserId: "7002", login: "owner-b" },
     ]);
+    await database.db.insert(agentProgressReports).values({
+      projectId: fixture.projectA,
+      agentId: fixture.agentA,
+      summary: "Finished owner-scoped Pulse route",
+      currentGoal: "Ship Team Pulse",
+      filesTouched: ["src/pulse/service.ts"],
+      testStatus: { passed: 7, failed: 0 },
+      state: "blocked",
+      blockerReason: "Waiting for review",
+      createdAt: new Date("2026-08-31T11:55:00.000Z"),
+    });
     const clock = createTestClock(now.toISOString());
     const config = webConfig();
     const sessionService = createWebSessionService({
@@ -379,6 +392,7 @@ describe("owner read HTTP routes", () => {
         `/api/v1/projects/${fixture.projectA}/messages`,
         `/api/v1/projects/${fixture.projectA}/messages/${fixture.messageA}`,
         `/api/v1/projects/${fixture.projectA}/events`,
+        `/api/v1/projects/${fixture.projectA}/pulse?date=2026-08-31`,
         `/api/v1/projects/${fixture.archivedA}/overview`,
       ]) {
         const response = await app.inject({ method: "GET", url: path, headers: { cookie: cookieA } });
@@ -422,6 +436,37 @@ describe("owner read HTTP routes", () => {
         headers: { cookie: cookieA },
       });
       expect(() => eventListResponseSchema.parse(events.json())).not.toThrow();
+      const pulse = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${fixture.projectA}/pulse?date=2026-08-31`,
+        headers: { cookie: cookieA },
+      });
+      expect(() => dailyPulseResponseSchema.parse(pulse.json())).not.toThrow();
+      expect(pulse.json()).toMatchObject({
+        date: "2026-08-31",
+        summary: {
+          active_agents_count: 2,
+          active_blockers_count: 1,
+          unique_files_touched: ["src/pulse/service.ts"],
+        },
+        developers: expect.arrayContaining([
+          expect.objectContaining({
+            connections: expect.arrayContaining([
+              expect.objectContaining({
+                agents: expect.arrayContaining([
+                  expect.objectContaining({
+                    agent_id: fixture.agentA,
+                    latest_progress: expect.objectContaining({
+                      summary: "Finished owner-scoped Pulse route",
+                      state: "blocked",
+                    }),
+                  }),
+                ]),
+              }),
+            ]),
+          }),
+        ]),
+      });
       expect(JSON.stringify(agentList.json())).not.toMatch(/token|digest/i);
 
       for (const cookie of [cookieB]) {
@@ -433,6 +478,24 @@ describe("owner read HTTP routes", () => {
         expect(foreign.statusCode).toBe(404);
         expect(foreign.json()).toMatchObject({ error: { code: "PROJECT_NOT_FOUND" } });
         expect(JSON.stringify(foreign.json())).not.toContain("owner A private body");
+      }
+
+      const foreignPulse = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${fixture.projectA}/pulse?date=2026-08-31`,
+        headers: { cookie: cookieB },
+      });
+      expect(foreignPulse.statusCode).toBe(404);
+      expect(foreignPulse.json()).toMatchObject({ error: { code: "PROJECT_NOT_FOUND" } });
+
+      for (const invalidDate of ["2026-02-30", "2026-13-01"]) {
+        const invalidPulse = await app.inject({
+          method: "GET",
+          url: `/api/v1/projects/${fixture.projectA}/pulse?date=${invalidDate}`,
+          headers: { cookie: cookieA },
+        });
+        expect(invalidPulse.statusCode).toBe(400);
+        expect(invalidPulse.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
       }
 
       for (const suffix of [

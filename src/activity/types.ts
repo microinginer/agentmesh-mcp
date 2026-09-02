@@ -2,6 +2,7 @@ export const activityEventTypes = [
   "agent.registered",
   "agent.registration_failed",
   "agent.synced",
+  "agent.progress_reported",
   "message.sent",
   "message.send_failed",
   "message.acknowledged",

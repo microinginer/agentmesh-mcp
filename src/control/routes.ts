@@ -10,6 +10,7 @@ import type { WebAuthConfig } from "../config.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { sendInvalidPayloadError, sendWebHttpError } from "../http-errors.js";
 import type { WebRouteRateLimits } from "../rate-limits.js";
+import { createPulseService } from "../pulse/service.js";
 import { createWebAuthMiddleware } from "../web-auth/middleware.js";
 import type { WebSessionService } from "../web-auth/session-service.js";
 import {
@@ -130,6 +131,18 @@ function emptyQuery(query: unknown): boolean {
   return query !== null && typeof query === "object" && !Array.isArray(query) && Object.keys(query).length === 0;
 }
 
+function validUtcDateString(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
+
 function parsePath(request: FastifyRequest): string | null {
   const parsed = projectPathSchema.safeParse(request.params);
   return parsed.success ? parsed.data.projectId : null;
@@ -224,6 +237,19 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
   });
   const readService = createProjectReadService({
     db: dependencies.db,
+    ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
+  });
+  const pulseService = createPulseService({
+    db: dependencies.db,
+    agentService: {
+      authenticateAgent: async () => {
+        throw new Error("Agent authentication not supported in control read route");
+      },
+    },
+    activity: {
+      record: async () => {},
+      recordBestEffort: async () => {},
+    },
     ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
   });
   const noStore = (_request: FastifyRequest, reply: FastifyReply, done: () => void) => {
@@ -336,6 +362,30 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
       return result.found
         ? reply.send({ overview: result.data })
         : sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/pulse", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const projectId = parsePath(request);
+    const query = parseReadQuery(request.query, { strings: ["date"] });
+    if (
+      projectId === null
+      || (request.query !== null
+        && typeof request.query === "object"
+        && Object.keys(request.query).length > 0
+        && query === null)
+    ) {
+      return invalidRequest(request, reply);
+    }
+    const date = typeof query?.date === "string" ? query.date : undefined;
+    if (date !== undefined && !validUtcDateString(date)) return invalidRequest(request, reply);
+    try {
+      const project = await projectService.get({ ownerUserId: request.webSession.userId, projectId });
+      if (project === null) return sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
+      return reply.send(await pulseService.getDailyPulse(projectId, date));
     } catch (error) {
       return controlFailure(error, request, reply);
     }

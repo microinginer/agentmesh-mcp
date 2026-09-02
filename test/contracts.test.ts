@@ -6,6 +6,7 @@ import {
   blackboardGetFactsInputSchema,
   blackboardSetFactInputSchema,
   listAgentsInputSchema,
+  reportProgressInputSchema,
   sendInputSchema,
   syncInputSchema,
 } from "../src/contracts.js";
@@ -135,6 +136,33 @@ describe("AgentMesh public input contracts", () => {
     expect(sendInputSchema.safeParse({ ...base, text: atLimit }).success).toBe(true);
     expect(sendInputSchema.safeParse({ ...base, text: overLimit }).success).toBe(false);
     expect(sendInputSchema.safeParse({ ...base, text: "" }).success).toBe(false);
+  });
+
+  it("validates progress reports and applies safe defaults", () => {
+    const parsed = reportProgressInputSchema.parse({
+      agent_token: agentToken,
+      summary: "Quick checkpoint",
+    });
+    expect(parsed).toMatchObject({ files_touched: [], state: "in_progress" });
+
+    expect(reportProgressInputSchema.safeParse({
+      agent_token: agentToken,
+      summary: "Refactored auth module",
+      current_goal: "Add unit tests",
+      files_touched: ["src/auth.ts"],
+      test_status: { passed: 10, failed: 0, skipped: 1 },
+      state: "completed",
+    }).success).toBe(true);
+    expect(reportProgressInputSchema.safeParse({
+      agent_token: agentToken,
+      summary: "Invalid tests",
+      test_status: { passed: -1, failed: 0 },
+    }).success).toBe(false);
+    expect(reportProgressInputSchema.safeParse({
+      agent_token: agentToken,
+      summary: "Invalid state",
+      state: "unknown_state",
+    }).success).toBe(false);
   });
 
   it("validates Blackboard set inputs and measures fact values in UTF-8 bytes", () => {

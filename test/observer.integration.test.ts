@@ -133,7 +133,7 @@ describe("pgAdmin observer database boundary", () => {
     }
   });
 
-  it("exposes exactly seven safe views without digests or session rows", async () => {
+  it("exposes exactly eight safe views without digests or session rows", async () => {
     const views = await database.pool.query<{ table_name: string }>(
       `SELECT table_name
          FROM information_schema.views
@@ -146,6 +146,7 @@ describe("pgAdmin observer database boundary", () => {
       "audit_events",
       "connections",
       "messages",
+      "progress_reports",
       "projects",
       "users",
     ]);

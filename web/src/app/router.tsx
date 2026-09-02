@@ -12,6 +12,7 @@ const MessagesPage = lazy(() => import("@/activity/messages-page").then((module)
 const ConnectionsPage = lazy(() => import("@/connections/connections-page").then((module) => ({ default: module.ConnectionsPage })));
 const GuidePage = lazy(() => import("@/guide/guide-page").then((module) => ({ default: module.GuidePage })));
 const ProjectOverviewPage = lazy(() => import("@/projects/project-overview-page").then((module) => ({ default: module.ProjectOverviewPage })));
+const TeamPulsePage = lazy(() => import("@/pulse/team-pulse-page").then((module) => ({ default: module.TeamPulsePage })));
 const ProjectsPage = lazy(() => import("@/projects/projects-page").then((module) => ({ default: module.ProjectsPage })));
 const ProjectSettings = lazy(() => import("@/settings/project-settings").then((module) => ({ default: module.ProjectSettings })));
 const OperatorGate = lazy(() => import("@/ops/operator-gate").then((module) => ({ default: module.OperatorGate })));
@@ -51,6 +52,7 @@ export const appRoutes: RouteObject[] = [
     children: [
       { index: true, element: lazyPage(<ProjectsPage />) },
       { path: "projects/:projectId", element: lazyPage(<ProjectOverviewPage />) },
+      { path: "projects/:projectId/pulse", element: lazyPage(<TeamPulsePage />) },
       { path: "projects/:projectId/agents", element: lazyPage(<AgentsPage />) },
       { path: "projects/:projectId/messages", element: lazyPage(<MessagesPage />) },
       { path: "projects/:projectId/activity", element: lazyPage(<EventsPage />) },
