@@ -34,6 +34,7 @@ export interface PublicControlProject {
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  canEdit: boolean;
 }
 
 interface ControlProjectServiceDependencies {
@@ -64,7 +65,7 @@ interface DeleteProjectInput extends OwnedProjectInput {
 
 type ProjectRow = typeof projects.$inferSelect;
 
-function publicProject(project: ProjectRow): PublicControlProject {
+function publicProject(project: ProjectRow, userId: string): PublicControlProject {
   if (project.status !== "active" && project.status !== "archived") {
     throw new ControlProjectError("CONTROL_UNAVAILABLE");
   }
@@ -76,6 +77,7 @@ function publicProject(project: ProjectRow): PublicControlProject {
     archivedAt: project.archivedAt?.toISOString() ?? null,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
+    canEdit: project.ownerUserId === userId,
   };
 }
 
@@ -145,10 +147,12 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
       const page = rows.slice(0, input.limit);
       const finalProject = page.at(-1);
       return {
-        projects: page.map(publicProject),
+        projects: page.map((project) => publicProject(project, input.userId)),
         activeCount: active?.value ?? 0,
         projectLimit,
-        defaultProject: defaultActiveProject === undefined ? null : publicProject(defaultActiveProject),
+        defaultProject: defaultActiveProject === undefined
+          ? null
+          : publicProject(defaultActiveProject, input.userId),
         nextCursor: rows.length > input.limit && finalProject !== undefined
           ? encodeAdminCursor({
               kind: "created",
@@ -164,7 +168,7 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
     const [project] = await db.select().from(projects).where(
       projectReadPredicate(input.userId, input.projectId),
     ).limit(1);
-    return project === undefined ? null : publicProject(project);
+    return project === undefined ? null : publicProject(project, input.userId);
   }
 
   async function create(input: CreateProjectInput): Promise<PublicControlProject> {
@@ -177,7 +181,7 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
         eq(projects.ownerUserId, input.ownerUserId),
         eq(projects.createIdempotencyKey, input.idempotencyKey),
       )).limit(1);
-      if (existing !== undefined) return publicProject(existing);
+      if (existing !== undefined) return publicProject(existing, input.ownerUserId);
 
       await enforceLimit(transaction, input.ownerUserId);
       const [created] = await transaction.insert(projects).values({
@@ -204,7 +208,7 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
         eventType: "project.created",
         metadata: { project_name: created.name },
       }, transaction);
-      return publicProject(created);
+      return publicProject(created, input.ownerUserId);
     });
   }
 
@@ -236,7 +240,7 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
         eventType: "project.archived",
         metadata: { project_name: updated.name },
       }, transaction);
-      return publicProject(updated);
+      return publicProject(updated, input.ownerUserId);
     });
   }
 
@@ -270,7 +274,7 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
         eventType: "project.restored",
         metadata: { project_name: updated.name },
       }, transaction);
-      return publicProject(updated);
+      return publicProject(updated, input.ownerUserId);
     });
   }
 

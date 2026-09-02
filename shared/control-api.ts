@@ -93,6 +93,7 @@ export const projectSchema = z.object({
   archived_at: timestamp.nullable(),
   created_at: timestamp,
   updated_at: timestamp,
+  can_edit: z.boolean().default(true),
 }).strict();
 
 export const projectListResponseSchema = z.object({

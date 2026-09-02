@@ -158,6 +158,7 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
       archived_at: projects.archivedAt,
       created_at: createdAt,
       updated_at: projects.updatedAt,
+      owner_user_id: projects.ownerUserId,
     }).from(projects).where(scopePredicate(scope, projectId)).limit(1);
     if (project === undefined) return { found: false as const };
 
@@ -192,14 +193,16 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
           gte(activityEvents.createdAt, new Date(now.getTime() - 24 * 60 * 60 * 1_000)),
         )),
     ]);
+    const { owner_user_id: ownerUserId, ...publicProject } = project;
 
     return {
       found: true as const,
       data: {
         project: {
-          ...project,
+          ...publicProject,
           archived_at: project.archived_at?.toISOString() ?? null,
           updated_at: project.updated_at.toISOString(),
+          can_edit: scope.kind === "user" && ownerUserId === scope.userId,
         },
         agents: agentCounts ?? { online: 0, idle: 0, offline: 0, total: 0 },
         messages: messageCounts ?? { total: 0, unacknowledged: 0 },

@@ -65,6 +65,7 @@ function publicProject(project: PublicControlProject) {
     archived_at: project.archivedAt,
     created_at: project.createdAt,
     updated_at: project.updatedAt,
+    can_edit: project.canEdit,
   };
 }
 
@@ -383,7 +384,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     const date = typeof query?.date === "string" ? query.date : undefined;
     if (date !== undefined && !validUtcDateString(date)) return invalidRequest(request, reply);
     try {
-      const project = await projectService.get({ ownerUserId: request.webSession.userId, projectId });
+      const project = await projectService.get({ userId: request.webSession.userId, projectId });
       if (project === null) return sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
       return reply.send(await pulseService.getDailyPulse(projectId, date));
     } catch (error) {

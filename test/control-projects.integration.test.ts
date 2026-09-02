@@ -619,7 +619,7 @@ describe("owner project HTTP routes", () => {
       });
       expect(v1.statusCode).toBe(200);
       expect(v1.json()).toMatchObject({
-        projects: [{ id: projectId }],
+        projects: [{ id: projectId, can_edit: false }],
         active_count: 0,
         project_limit: 5,
       });
@@ -631,9 +631,9 @@ describe("owner project HTTP routes", () => {
       });
       expect(v2.statusCode).toBe(200);
       expect(v2.json()).toMatchObject({
-        projects: [{ id: projectId }],
+        projects: [{ id: projectId, can_edit: false }],
         active_count: 0,
-        default_project: { id: projectId },
+        default_project: { id: projectId, can_edit: false },
       });
 
       const detail = await app.inject({
@@ -642,7 +642,7 @@ describe("owner project HTTP routes", () => {
         headers: { cookie: viewer.cookie },
       });
       expect(detail.statusCode).toBe(200);
-      expect(detail.json()).toMatchObject({ project: { id: projectId } });
+      expect(detail.json()).toMatchObject({ project: { id: projectId, can_edit: false } });
 
       const archiveDenied = await app.inject({
         method: "POST",

@@ -42,7 +42,7 @@ afterAll(async () => {
 
 describe("hosted control-plane schema", () => {
   it("backfills owner memberships while leaving ownerless projects without members", async () => {
-    const fixture = await createMigrationFixtureThrough(databaseUrl, 8);
+    const fixture = await createMigrationFixtureThrough(databaseUrl, 9);
     const ownerId = randomUUID();
     const ownedProjectId = randomUUID();
     const ownerlessProjectId = randomUUID();

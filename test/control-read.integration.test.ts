@@ -422,6 +422,7 @@ describe("owner read HTTP routes", () => {
         `/api/v1/projects/${fixture.projectA}/messages`,
         `/api/v1/projects/${fixture.projectA}/messages/${fixture.messageA}`,
         `/api/v1/projects/${fixture.projectA}/events`,
+        `/api/v1/projects/${fixture.projectA}/pulse?date=2026-08-31`,
       ]) {
         const response = await app.inject({
           method: "GET",
@@ -461,6 +462,13 @@ describe("owner read HTTP routes", () => {
         url: `/api/v1/projects/${fixture.projectA}/overview`,
         headers: { cookie: cookieA },
       });
+      expect(overview.json()).toMatchObject({ overview: { project: { can_edit: true } } });
+      const viewerOverview = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${fixture.projectA}/overview`,
+        headers: { cookie: viewerCookie },
+      });
+      expect(viewerOverview.json()).toMatchObject({ overview: { project: { can_edit: false } } });
       expect(() => overviewResponseSchema.parse(overview.json())).not.toThrow();
       const events = await app.inject({
         method: "GET",
