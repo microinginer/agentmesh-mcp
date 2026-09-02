@@ -12,8 +12,8 @@ export function PulseSummaryCards({ pulse }: { pulse: DailyPulseResponse }) {
   const { summary } = pulse;
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-      <div className="p-4 rounded-xl border bg-card text-card-foreground shadow-xs flex flex-col justify-between">
+    <div className="min-w-0 grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+      <div className="min-w-0 p-3.5 sm:p-4 rounded-xl border bg-card text-card-foreground shadow-xs flex flex-col justify-between">
         <div className="flex items-center justify-between text-muted-foreground mb-2">
           <span className="text-xs font-medium uppercase tracking-wider">Active Agents</span>
           <BotIcon className="size-4 text-blue-500" />
@@ -24,7 +24,7 @@ export function PulseSummaryCards({ pulse }: { pulse: DailyPulseResponse }) {
         </div>
       </div>
 
-      <div className="p-4 rounded-xl border bg-card text-card-foreground shadow-xs flex flex-col justify-between">
+      <div className="min-w-0 p-3.5 sm:p-4 rounded-xl border bg-card text-card-foreground shadow-xs flex flex-col justify-between">
         <div className="flex items-center justify-between text-muted-foreground mb-2">
           <span className="text-xs font-medium uppercase tracking-wider">Active Devices</span>
           <LaptopIcon className="size-4 text-violet-500" />
@@ -35,7 +35,7 @@ export function PulseSummaryCards({ pulse }: { pulse: DailyPulseResponse }) {
         </div>
       </div>
 
-      <div className="p-4 rounded-xl border bg-card text-card-foreground shadow-xs flex flex-col justify-between">
+      <div className="min-w-0 p-3.5 sm:p-4 rounded-xl border bg-card text-card-foreground shadow-xs flex flex-col justify-between">
         <div className="flex items-center justify-between text-muted-foreground mb-2">
           <span className="text-xs font-medium uppercase tracking-wider">Files Modified</span>
           <FileCode2Icon className="size-4 text-emerald-500" />
@@ -46,7 +46,7 @@ export function PulseSummaryCards({ pulse }: { pulse: DailyPulseResponse }) {
         </div>
       </div>
 
-      <div className={`p-4 rounded-xl border bg-card text-card-foreground shadow-xs flex flex-col justify-between ${
+      <div className={`min-w-0 p-3.5 sm:p-4 rounded-xl border bg-card text-card-foreground shadow-xs flex flex-col justify-between ${
         summary.active_blockers_count > 0 ? "border-red-500/40 bg-red-500/5" : ""
       }`}>
         <div className="flex items-center justify-between text-muted-foreground mb-2">

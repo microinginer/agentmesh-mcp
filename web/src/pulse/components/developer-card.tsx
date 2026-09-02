@@ -67,44 +67,44 @@ function AgentRow({ agent }: { agent: PulseAgentSummary }) {
   const latest = agent.latest_progress;
 
   return (
-    <div className="p-3.5 rounded-lg border bg-background/50 space-y-2.5">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2">
+    <div className="pulse-agent-card min-w-0 overflow-hidden p-4 rounded-lg border bg-background/50 space-y-3">
+      <div className="min-w-0 flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0 flex flex-1 items-center gap-2 flex-wrap">
           <BotIcon className="size-4 text-blue-500" />
-          <span className="font-semibold text-sm">{agent.name}</span>
-          <span className="text-xs text-muted-foreground">({agent.client})</span>
+          <span className="min-w-0 break-anywhere font-semibold text-sm">{agent.name}</span>
+          <span className="break-anywhere text-xs text-muted-foreground">({agent.client})</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="shrink-0 flex items-center justify-end gap-2 flex-wrap">
           <StateBadge state={agent.status} />
           {latest && <StateBadge state={latest.state} />}
         </div>
       </div>
 
       {agent.current_goal && (
-        <div className="flex items-start gap-1.5 text-xs text-foreground/90 bg-muted/30 p-2 rounded-md border border-muted/50">
+        <div className="min-w-0 flex items-start gap-1.5 text-xs text-foreground/90 bg-muted/30 p-2 rounded-md border border-muted/50">
           <TargetIcon className="size-3.5 text-amber-500 mt-0.5 shrink-0" />
-          <div>
+          <div className="min-w-0 break-anywhere">
             <span className="text-muted-foreground font-medium">Goal: </span>
-            <span className="font-medium">{agent.current_goal}</span>
+            <span className="break-anywhere font-medium">{agent.current_goal}</span>
           </div>
         </div>
       )}
 
       {latest ? (
-        <div className="space-y-2 text-xs">
-          <p className="text-muted-foreground leading-relaxed">
+        <div className="min-w-0 space-y-2 text-xs">
+          <p className="break-anywhere text-muted-foreground leading-relaxed">
             <span className="font-medium text-foreground">Latest action: </span>
             {latest.summary}
           </p>
 
           {latest.state === "blocked" && latest.blocker_reason && (
-            <div className="p-2 rounded bg-red-500/10 border border-red-500/20 text-red-700 dark:text-red-300 font-medium">
+            <div className="break-anywhere p-2 rounded bg-red-500/10 border border-red-500/20 text-red-700 dark:text-red-300 font-medium">
               ⚠️ Blocker: {latest.blocker_reason}
             </div>
           )}
 
           {latest.test_status && (
-            <div className="flex items-center gap-2 text-[11px]">
+            <div className="flex items-center gap-2 text-[11px] flex-wrap">
               <span className="text-muted-foreground">Test results:</span>
               <span className="font-medium text-emerald-600 dark:text-emerald-400">
                 ✅ {latest.test_status.passed} passed
@@ -118,15 +118,15 @@ function AgentRow({ agent }: { agent: PulseAgentSummary }) {
           )}
 
           {latest.files_touched.length > 0 && (
-            <div className="space-y-1">
+            <div className="min-w-0 space-y-1">
               <span className="text-[11px] text-muted-foreground flex items-center gap-1">
                 <FileCodeIcon className="size-3" /> Touched files:
               </span>
-              <div className="flex flex-wrap gap-1">
+              <div className="min-w-0 flex flex-wrap gap-1">
                 {latest.files_touched.map((file, idx) => (
                   <span
                     key={idx}
-                    className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border"
+                    className="max-w-full break-anywhere whitespace-normal font-mono text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border"
                   >
                     {file}
                   </span>
@@ -153,12 +153,12 @@ function AgentRow({ agent }: { agent: PulseAgentSummary }) {
           </Button>
 
           {showHistory && (
-            <div className="mt-2 space-y-1.5 pl-3 border-l-2 border-muted">
+            <div className="min-w-0 mt-2 space-y-1.5 pl-3 border-l-2 border-muted">
               {agent.history.map((h) => (
-                <div key={h.id} className="text-[11px] text-muted-foreground space-y-0.5">
-                  <div className="flex items-center gap-1.5">
+                <div key={h.id} className="min-w-0 text-[11px] text-muted-foreground space-y-0.5">
+                  <div className="min-w-0 flex items-start gap-1.5">
                     <span className="font-mono text-[10px] text-foreground font-medium">{h.time}</span>
-                    <span className="text-foreground/80">{h.summary}</span>
+                    <span className="min-w-0 break-anywhere text-foreground/80">{h.summary}</span>
                   </div>
                 </div>
               ))}
@@ -181,17 +181,17 @@ export function DeveloperCard({ developer }: { developer: PulseDeveloperSummary 
   const totalAgents = developer.connections.reduce((sum, c) => sum + c.agents.length, 0);
 
   return (
-    <div className="p-4 sm:p-5 rounded-xl border bg-card text-card-foreground shadow-xs space-y-4">
+    <div className="min-w-0 overflow-hidden p-4 sm:p-5 rounded-xl border bg-card text-card-foreground shadow-xs space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-3">
-          <Avatar className="size-10 border">
+        <div className="min-w-0 flex flex-1 items-center gap-3">
+          <Avatar className="size-10 shrink-0 border">
             {developer.avatar_url ? (
               <AvatarImage src={developer.avatar_url} alt={developer.display_name} />
             ) : null}
             <AvatarFallback>{initials}</AvatarFallback>
           </Avatar>
-          <div>
-            <h3 className="font-semibold text-sm sm:text-base leading-tight">
+          <div className="min-w-0">
+            <h3 className="break-anywhere font-semibold text-sm sm:text-base leading-tight">
               {developer.display_name}
             </h3>
             <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
@@ -203,15 +203,15 @@ export function DeveloperCard({ developer }: { developer: PulseDeveloperSummary 
         </div>
       </div>
 
-      <div className="space-y-4">
+      <div className="min-w-0 space-y-4">
         {developer.connections.map((conn, idx) => (
-          <div key={conn.connection_id ?? idx} className="space-y-2">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-medium">
+          <div key={conn.connection_id ?? idx} className="min-w-0 space-y-2">
+            <div className="min-w-0 flex items-start gap-1.5 text-xs text-muted-foreground font-medium">
               <LaptopIcon className="size-3.5 text-violet-500" />
-              <span>Device: {conn.label}</span>
+              <span className="break-anywhere">Device: {conn.label}</span>
             </div>
 
-            <div className="grid gap-2.5">
+            <div className="min-w-0 grid gap-2.5">
               {conn.agents.map((agent) => (
                 <AgentRow key={agent.agent_id} agent={agent} />
               ))}

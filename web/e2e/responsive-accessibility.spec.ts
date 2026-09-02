@@ -59,3 +59,20 @@ test("mobile navigation keeps its heading above the menu links", async ({ page }
   expect(overviewBox!.y).toBeGreaterThanOrEqual(descriptionBox!.y + descriptionBox!.height);
   await expectNoHorizontalOverflow(page);
 });
+
+test("mobile Team Pulse keeps the selected project and padded content inside the viewport", async ({ page }) => {
+  const projectId = await prepareOwner(page, "Team Pulse Mobile E2E");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/app/projects/${projectId}/pulse`);
+
+  await expect(page.getByRole("button", { name: "Current project: Team Pulse Mobile E2E" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Team Pulse" })).toBeVisible();
+  const pulsePage = page.locator(".team-pulse-page");
+  const contentBox = await pulsePage.boundingBox();
+  expect(contentBox).not.toBeNull();
+  expect(contentBox!.x).toBe(0);
+  expect(contentBox!.x + contentBox!.width).toBeLessThanOrEqual(390);
+  expect(await pulsePage.evaluate((element) => getComputedStyle(element).paddingInlineStart)).toBe("20px");
+  expect(await pulsePage.evaluate((element) => getComputedStyle(element).paddingInlineEnd)).toBe("20px");
+  await expectNoHorizontalOverflow(page);
+});
