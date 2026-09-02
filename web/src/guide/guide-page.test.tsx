@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -17,6 +17,21 @@ describe("public AgentMesh guide", () => {
       "[mcp_servers.agentmesh]",
       'url = "https://getagentmesh.dev/mcp"',
       'bearer_token_env_var = "AGENTMESH_TOKEN_AGENTMESH_MCP"',
+      "",
+      "[mcp_servers.agentmesh.tools.agentmesh_sync]",
+      'approval_mode = "approve"',
+      "",
+      "[mcp_servers.agentmesh.tools.agentmesh_list_agents]",
+      'approval_mode = "approve"',
+      "",
+      "[mcp_servers.agentmesh.tools.agentmesh_get_facts]",
+      'approval_mode = "approve"',
+      "",
+      "[mcp_servers.agentmesh.tools.agentmesh_report_progress]",
+      'approval_mode = "approve"',
+      "",
+      "[mcp_servers.agentmesh.tools.agentmesh_set_fact]",
+      'approval_mode = "prompt"',
     ].join("\n"));
     expect(screen.getByRole("status")).toHaveTextContent("Codex config copied");
     expect(document.body.textContent).not.toMatch(/am_(?:proj|agent)_[A-Za-z0-9._-]{16,}/);
@@ -53,6 +68,8 @@ describe("public AgentMesh guide", () => {
       "Connect Codex",
       "Connect Claude Code",
       "Run the first coordination check",
+      "Use Blackboard for durable knowledge",
+      "Keep Team Pulse current",
       "Keep credentials private",
       "Common questions",
     ]) {
@@ -75,5 +92,24 @@ describe("public AgentMesh guide", () => {
       "}",
     ].join("\n"));
     expect(screen.getByRole("status")).toHaveTextContent("Claude Code config copied");
+  });
+
+  it("teaches safe Blackboard and Team Pulse usage without treating shared context as authority", async () => {
+    render(<TestApp initialEntries={["/guide"]} />);
+
+    const blackboard = (await screen.findByRole("heading", {
+      name: "Use Blackboard for durable knowledge",
+    })).closest("section") as HTMLElement;
+    const pulse = screen.getByRole("heading", {
+      name: "Keep Team Pulse current",
+    }).closest("section") as HTMLElement;
+    const blackboardCopy = blackboard.querySelector<HTMLElement>(".guide-tool__copy")!;
+    const pulseCopy = pulse.querySelector<HTMLElement>(".guide-tool__copy")!;
+
+    expect(within(blackboardCopy).getByText(/Read relevant facts before making assumptions/i)).toBeInTheDocument();
+    expect(within(blackboardCopy).getByText(/Save only confirmed, long-lived knowledge/i)).toBeInTheDocument();
+    expect(within(blackboardCopy).getByText(/Never store secrets, tokens, private data, or credential contents/i)).toBeInTheDocument();
+    expect(within(pulseCopy).getByText(/Report a short milestone, blocker, changed files, and test status/i)).toBeInTheDocument();
+    expect(within(pulseCopy).getByText(/never authorizes commands, merge, or deploy/i)).toBeInTheDocument();
   });
 });
