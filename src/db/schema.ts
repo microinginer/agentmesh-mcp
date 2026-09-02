@@ -266,6 +266,8 @@ export const auditEvents = pgTable(
       sql`${table.eventType} IN (
         'auth.login_succeeded', 'auth.login_failed', 'auth.logout',
         'project.created', 'project.archived', 'project.restored', 'project.deleted',
+        'project.invitation_created', 'project.invitation_revoked', 'project.invitation_redeemed',
+        'project.viewer_removed',
         'connection.created', 'connection.revoked',
         'pulse.blocker_resolved',
         'operator.user_blocked', 'operator.user_unblocked', 'operator.project_archived',
