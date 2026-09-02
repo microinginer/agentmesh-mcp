@@ -237,6 +237,7 @@ export const auditEvents = pgTable(
         'auth.login_succeeded', 'auth.login_failed', 'auth.logout',
         'project.created', 'project.archived', 'project.restored', 'project.deleted',
         'connection.created', 'connection.revoked',
+        'pulse.blocker_resolved',
         'operator.user_blocked', 'operator.user_unblocked', 'operator.project_archived',
         'operator.project_owner_assigned'
       )`,
@@ -370,6 +371,9 @@ export const agentProgressReports = pgTable(
     testStatus: jsonb("test_status").$type<TestStatusReport>(),
     state: varchar("state", { length: 24 }).notNull().default("in_progress"),
     blockerReason: text("blocker_reason"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedByUserId: uuid("resolved_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    resolutionNote: text("resolution_note"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

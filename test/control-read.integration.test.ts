@@ -9,6 +9,7 @@ import {
   dailyPulseResponseSchema,
   eventListResponseSchema,
   overviewResponseSchema,
+  pulseBlockerResolutionResponseSchema,
 } from "../shared/control-api.js";
 import { createAuditService } from "../src/audit/service.js";
 import type { WebAuthConfig } from "../src/config.js";
@@ -20,6 +21,7 @@ import {
   activityEvents,
   agentProgressReports,
   agents,
+  auditEvents,
   messages,
   oauthIdentities,
   projectMemberships,
@@ -343,6 +345,14 @@ const unusedGitHub: GitHubOAuthClient = {
   fetchProfile: async () => { throw new Error("not used"); },
 };
 
+function mutationHeaders(session: { sessionToken: string; csrfToken: string }) {
+  return {
+    cookie: `agentmesh_session=${session.sessionToken}`,
+    origin: "http://127.0.0.1",
+    "x-csrf-token": session.csrfToken,
+  };
+}
+
 describe("owner read HTTP routes", () => {
   it("returns no-store safe envelopes, strict bounds, and indistinguishable 404s", async () => {
     const fixture = await seedReadFixture();
@@ -555,6 +565,172 @@ describe("owner read HTTP routes", () => {
         expect(invalid.headers["cache-control"]).toBe("no-store");
         expect(invalid.json()).toMatchObject({ error: { code: "INVALID_REQUEST" } });
       }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("lets only the owner resolve an offline agent blocker while preserving its audit history", async () => {
+    const fixture = await seedReadFixture();
+    await database.db.insert(oauthIdentities).values([
+      { userId: fixture.ownerA, provider: "github", providerUserId: "7101", login: "owner-a" },
+      { userId: fixture.viewer, provider: "github", providerUserId: "7102", login: "viewer" },
+    ]);
+    await database.db.insert(projectMemberships).values({
+      projectId: fixture.projectA,
+      userId: fixture.viewer,
+      role: "viewer",
+      createdBy: fixture.ownerA,
+    });
+    await database.db.update(agents).set({
+      lastSeenAt: new Date("2026-08-31T11:00:00.000Z"),
+    }).where(eq(agents.id, fixture.agentA));
+    await database.db.update(agents).set({
+      lastSeenAt: new Date("2026-08-31T11:30:00.000Z"),
+    }).where(eq(agents.id, fixture.agentA2));
+    const [offlineBlocker, onlineBlocker] = await database.db.insert(agentProgressReports).values([
+      {
+        projectId: fixture.projectA,
+        agentId: fixture.agentA,
+        summary: "Waiting on a completed backend slice",
+        currentGoal: "Ship shared read",
+        filesTouched: ["src/pulse/service.ts"],
+        state: "blocked",
+        blockerReason: "Missing can_edit",
+        createdAt: new Date("2026-08-31T11:05:00.000Z"),
+      },
+      {
+        projectId: fixture.projectA,
+        agentId: fixture.agentA2,
+        summary: "Still working on the active blocker",
+        currentGoal: "Finish active work",
+        filesTouched: [],
+        state: "blocked",
+        blockerReason: "Active agent owns this blocker",
+        createdAt: new Date("2026-08-31T11:58:00.000Z"),
+      },
+    ]).returning({ id: agentProgressReports.id });
+    if (offlineBlocker === undefined || onlineBlocker === undefined) throw new Error("report insert failed");
+
+    const clock = createTestClock(now.toISOString());
+    const config = webConfig();
+    const sessionService = createWebSessionService({
+      db: database.db,
+      keys: deriveWebAuthKeys(config.authKey),
+      clock: clock.now,
+    });
+    const ownerSession = await sessionService.issue(fixture.ownerA, clock.now());
+    const viewerSession = await sessionService.issue(fixture.viewer, clock.now());
+    if (ownerSession === null || viewerSession === null) throw new Error("session issue failed");
+    const app = buildHttpApp({
+      db: database.db,
+      signingKey,
+      projectService: createProjectService({ db: database.db, clock: clock.now }),
+      host: "127.0.0.1",
+      allowedHosts: ["127.0.0.1", "localhost"],
+      admin: null,
+      logger: { write: () => {} },
+      web: {
+        db: database.db,
+        config,
+        githubClient: unusedGitHub,
+        identityService: createIdentityService({ db: database.db, clock: clock.now }),
+        sessionService,
+        auditService: createAuditService({ db: database.db, clock: clock.now }),
+        clock: clock.now,
+      },
+    });
+    try {
+      const viewerDenied = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${fixture.projectA}/pulse/blockers/${offlineBlocker.id}/resolve`,
+        headers: mutationHeaders(viewerSession),
+        payload: { note: "Viewer must not resolve this" },
+      });
+      expect(viewerDenied.statusCode).toBe(404);
+      expect(viewerDenied.json()).toMatchObject({ error: { code: "PROJECT_NOT_FOUND" } });
+
+      const resolved = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${fixture.projectA}/pulse/blockers/${offlineBlocker.id}/resolve`,
+        headers: mutationHeaders(ownerSession),
+        payload: { note: "Superseded by the merged and deployed implementation" },
+      });
+      expect(resolved.statusCode).toBe(200);
+      expect(resolved.headers["cache-control"]).toBe("no-store");
+      expect(() => pulseBlockerResolutionResponseSchema.parse(resolved.json())).not.toThrow();
+      expect(resolved.json()).toMatchObject({
+        blocker: {
+          id: offlineBlocker.id,
+          resolved_at: now.toISOString(),
+          resolution_note: "Superseded by the merged and deployed implementation",
+        },
+      });
+
+      const activeDenied = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${fixture.projectA}/pulse/blockers/${onlineBlocker.id}/resolve`,
+        headers: mutationHeaders(ownerSession),
+        payload: {},
+      });
+      expect(activeDenied.statusCode).toBe(409);
+      expect(activeDenied.json()).toMatchObject({ error: { code: "BLOCKER_STATE_CONFLICT" } });
+
+      const repeated = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${fixture.projectA}/pulse/blockers/${offlineBlocker.id}/resolve`,
+        headers: mutationHeaders(ownerSession),
+        payload: {},
+      });
+      expect(repeated.statusCode).toBe(409);
+
+      const pulse = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${fixture.projectA}/pulse?date=2026-08-31`,
+        headers: { cookie: `agentmesh_session=${ownerSession.sessionToken}` },
+      });
+      expect(pulse.statusCode).toBe(200);
+      expect(pulse.json()).toMatchObject({
+        summary: { active_blockers_count: 1 },
+        developers: expect.arrayContaining([
+          expect.objectContaining({
+            connections: expect.arrayContaining([
+              expect.objectContaining({
+                agents: expect.arrayContaining([
+                  expect.objectContaining({
+                    agent_id: fixture.agentA,
+                    latest_progress: expect.objectContaining({
+                      id: offlineBlocker.id,
+                      resolved_at: now.toISOString(),
+                      resolution_note: "Superseded by the merged and deployed implementation",
+                    }),
+                  }),
+                ]),
+              }),
+            ]),
+          }),
+        ]),
+      });
+
+      const stored = await database.pool.query<{
+        resolved_at: Date | null;
+        resolved_by_user_id: string | null;
+        resolution_note: string | null;
+      }>(`select resolved_at, resolved_by_user_id, resolution_note
+          from agent_progress_reports where id = $1`, [offlineBlocker.id]);
+      expect(stored.rows[0]).toEqual({
+        resolved_at: now,
+        resolved_by_user_id: fixture.ownerA,
+        resolution_note: "Superseded by the merged and deployed implementation",
+      });
+      const audit = await database.db.select().from(auditEvents).where(eq(auditEvents.projectId, fixture.projectA));
+      expect(audit).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          eventType: "pulse.blocker_resolved",
+          userId: fixture.ownerA,
+          projectId: fixture.projectA,
+        }),
+      ]));
     } finally {
       await app.close();
     }

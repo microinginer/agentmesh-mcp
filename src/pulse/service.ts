@@ -35,12 +35,15 @@ export interface PulseAgentSummary {
   last_seen_at: string;
   current_goal: string | null;
   latest_progress: {
+    id: string;
     summary: string;
     state: AgentProgressState;
     blocker_reason: string | null;
     test_status: TestStatusReport | null;
     files_touched: string[];
     reported_at: string;
+    resolved_at: string | null;
+    resolution_note: string | null;
   } | null;
   history: Array<{
     id: string;
@@ -48,6 +51,8 @@ export interface PulseAgentSummary {
     summary: string;
     state: AgentProgressState;
     blocker_reason: string | null;
+    resolved_at: string | null;
+    resolution_note: string | null;
   }>;
 }
 
@@ -234,7 +239,7 @@ export function createPulseService(dependencies: PulseServiceDependencies) {
       const agentReports = agentReportsMap.get(agent.id) ?? [];
       const latestReport = agentReports.length > 0 ? agentReports[agentReports.length - 1] : null;
 
-      if (latestReport?.state === "blocked") {
+      if (latestReport?.state === "blocked" && latestReport.resolvedAt === null) {
         activeBlockersCount++;
       }
 
@@ -247,12 +252,15 @@ export function createPulseService(dependencies: PulseServiceDependencies) {
         current_goal: latestReport?.currentGoal ?? null,
         latest_progress: latestReport
           ? {
+              id: latestReport.id,
               summary: latestReport.summary,
               state: latestReport.state as AgentProgressState,
               blocker_reason: latestReport.blockerReason,
               test_status: latestReport.testStatus ?? null,
               files_touched: latestReport.filesTouched,
               reported_at: latestReport.createdAt.toISOString(),
+              resolved_at: latestReport.resolvedAt?.toISOString() ?? null,
+              resolution_note: latestReport.resolutionNote,
             }
           : null,
         history: agentReports.map((r) => ({
@@ -261,6 +269,8 @@ export function createPulseService(dependencies: PulseServiceDependencies) {
           summary: r.summary,
           state: r.state as AgentProgressState,
           blocker_reason: r.blockerReason,
+          resolved_at: r.resolvedAt?.toISOString() ?? null,
+          resolution_note: r.resolutionNote,
         })),
       };
 

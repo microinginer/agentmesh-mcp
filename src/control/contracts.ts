@@ -21,6 +21,16 @@ export const projectPathSchema = z.object({
   projectId: uuidV4Schema,
 }).strict();
 
+export const pulseBlockerPathSchema = z.object({
+  projectId: uuidV4Schema,
+  reportId: uuidV4Schema,
+}).strict();
+
+export const resolvePulseBlockerBodySchema = z.object({
+  note: z.string().max(500).transform((value) => value.trim()).transform((value) => value === "" ? null : value)
+    .nullable().default(null),
+}).strict();
+
 export const projectMessagePathSchema = z.object({
   projectId: uuidV4Schema,
   messageId: uuidV4Schema,

@@ -48,12 +48,15 @@ function pulseFor(date: string): DailyPulseResponse {
           last_seen_at: `${date}T12:00:00.000Z`,
           current_goal: "Ship Team Pulse",
           latest_progress: {
+            id: "00000000-0000-4000-8000-000000000040",
             summary: `Pulse update for ${date}`,
             state: "blocked",
             blocker_reason: "Waiting for review",
             test_status: { passed: 7, failed: 0 },
             files_touched: ["src/pulse/service.ts"],
             reported_at: `${date}T11:55:00.000Z`,
+            resolved_at: null,
+            resolution_note: null,
           },
           history: [],
         }],
@@ -125,6 +128,84 @@ describe("TeamPulsePage", () => {
     expect(container.querySelector(".team-pulse-page")).toBeInTheDocument();
     expect(container.querySelector(".pulse-agent-card")).toHaveClass("min-w-0", "overflow-hidden");
   });
+
+  it("lets the owner resolve only an offline blocker and keeps the action hidden from viewers", async () => {
+    const user = userEvent.setup();
+    const today = new Date().toISOString().slice(0, 10);
+    const reportId = "00000000-0000-4000-8000-000000000040";
+    const pulse = pulseFor(today);
+    const agent = pulse.developers[0]!.connections[0]!.agents[0]!;
+    agent.status = "offline";
+    Object.assign(agent.latest_progress!, {
+      id: reportId,
+      resolved_at: null,
+      resolution_note: null,
+    });
+    let resolved = false;
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = requestPath(input);
+      if (path === "/api/v1/session") return Response.json(session);
+      if (path === `/api/v1/projects/${projectId}`) {
+        return Response.json({ project: { ...activeProject, can_edit: true } });
+      }
+      if (path === `/api/v1/projects/${projectId}/pulse?date=${today}`) {
+        if (resolved) {
+          pulse.summary.active_blockers_count = 0;
+          Object.assign(agent.latest_progress!, {
+            resolved_at: `${today}T12:30:00.000Z`,
+            resolution_note: "Covered by the deployed fix",
+          });
+        }
+        return Response.json(pulse);
+      }
+      if (path === `/api/v1/projects/${projectId}/pulse/blockers/${reportId}/resolve` && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ note: "Covered by the deployed fix" });
+        resolved = true;
+        return Response.json({
+          blocker: {
+            id: reportId,
+            resolved_at: `${today}T12:30:00.000Z`,
+            resolution_note: "Covered by the deployed fix",
+          },
+        });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+    });
+    vi.stubGlobal("fetch", fetcher);
+
+    const ownerView = render(<TestApp initialEntries={[`/app/projects/${projectId}/pulse`]} />);
+    const resolveButton = await screen.findByRole("button", { name: "Resolve blocker for codex-pulse" });
+    await user.click(resolveButton);
+    expect(screen.getByRole("heading", { name: "Resolve blocker?" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Resolution note (optional)"), "Covered by the deployed fix");
+    await user.click(screen.getByRole("button", { name: "Mark resolved" }));
+    expect(await screen.findByText("Resolved")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resolve blocker for codex-pulse" })).not.toBeInTheDocument();
+    ownerView.unmount();
+
+    resolved = false;
+    pulse.summary.active_blockers_count = 1;
+    agent.status = "online";
+    Object.assign(agent.latest_progress!, { resolved_at: null, resolution_note: null });
+    const activeOwnerView = render(<TestApp initialEntries={[`/app/projects/${projectId}/pulse`]} />);
+    expect(await screen.findByText("Pulse update for " + today)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resolve blocker for codex-pulse" })).not.toBeInTheDocument();
+    activeOwnerView.unmount();
+
+    agent.status = "offline";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/v1/session") return Response.json(session);
+      if (path === `/api/v1/projects/${projectId}`) {
+        return Response.json({ project: { ...activeProject, can_edit: false } });
+      }
+      if (path === `/api/v1/projects/${projectId}/pulse?date=${today}`) return Response.json(pulse);
+      throw new Error(`Viewer attempted unexpected request: ${path}`);
+    }));
+    render(<TestApp initialEntries={[`/app/projects/${projectId}/pulse`]} />);
+    expect(await screen.findByText("Pulse update for " + today)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resolve blocker for codex-pulse" })).not.toBeInTheDocument();
+  });
 });
 
 describe("generateStandupMarkdown", () => {
@@ -157,12 +238,15 @@ describe("generateStandupMarkdown", () => {
                   last_seen_at: "2026-09-02T14:58:00.000Z",
                   current_goal: "Auth Flow redesign",
                   latest_progress: {
+                    id: "00000000-0000-4000-8000-000000000041",
                     summary: "Implemented JWT verification",
                     state: "completed",
                     blocker_reason: null,
                     test_status: { passed: 15, failed: 0 },
                     files_touched: ["src/auth.ts", "test/auth.test.ts"],
                     reported_at: "2026-09-02T14:55:00.000Z",
+                    resolved_at: null,
+                    resolution_note: null,
                   },
                   history: [],
                 },
@@ -187,12 +271,15 @@ describe("generateStandupMarkdown", () => {
                   last_seen_at: "2026-09-02T11:00:00.000Z",
                   current_goal: "Migrations",
                   latest_progress: {
+                    id: "00000000-0000-4000-8000-000000000042",
                     summary: "Migration deadlock error",
                     state: "blocked",
                     blocker_reason: "Deadlock on table locks",
                     test_status: { passed: 2, failed: 1 },
                     files_touched: ["src/routes.ts"],
                     reported_at: "2026-09-02T11:00:00.000Z",
+                    resolved_at: null,
+                    resolution_note: null,
                   },
                   history: [],
                 },
