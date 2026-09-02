@@ -34,6 +34,8 @@ const unusedGitHub: GitHubOAuthClient = {
 
 const testLimits: RateLimitConfig = {
   oauthStart: 2,
+  inviteCapture: 3,
+  inviteRedeem: 3,
   ownerRead: 2,
   ownerMutation: 20,
   connectionCreate: 2,

@@ -17,6 +17,8 @@ export type RateLimitGuard = (request: FastifyRequest, reply: FastifyReply) => P
 export interface WebRouteRateLimits {
   oauthStart: RateLimitGuard;
   oauthCallback: RateLimitGuard;
+  inviteCapture: RateLimitGuard;
+  inviteRedeem: RateLimitGuard;
   ownerRead: RateLimitGuard;
   ownerMutation: RateLimitGuard;
   connectionCreate: RateLimitGuard;
@@ -163,6 +165,20 @@ export function createRateLimitGuards(
         max: config.oauthStart,
         timeWindow: TEN_MINUTES_MS,
         identity: byIp,
+      }),
+      inviteCapture: createGuard({
+        app,
+        group: "invite-capture",
+        max: config.inviteCapture,
+        timeWindow: TEN_MINUTES_MS,
+        identity: byIp,
+      }),
+      inviteRedeem: createGuard({
+        app,
+        group: "invite-redeem",
+        max: config.inviteRedeem,
+        timeWindow: ONE_MINUTE_MS,
+        identity: bySession,
       }),
       ownerRead: createGuard({
         app,
