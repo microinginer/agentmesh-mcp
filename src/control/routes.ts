@@ -11,6 +11,7 @@ import type { AgentMeshDatabase } from "../db/client.js";
 import { sendInvalidPayloadError, sendWebHttpError } from "../http-errors.js";
 import type { WebRouteRateLimits } from "../rate-limits.js";
 import { createPulseService } from "../pulse/service.js";
+import { createPulseResolutionService, PulseResolutionError } from "../pulse/resolution-service.js";
 import { createWebAuthMiddleware } from "../web-auth/middleware.js";
 import type { WebSessionService } from "../web-auth/session-service.js";
 import {
@@ -23,6 +24,8 @@ import {
   projectListQuerySchema,
   projectMessagePathSchema,
   projectPathSchema,
+  pulseBlockerPathSchema,
+  resolvePulseBlockerBodySchema,
 } from "./contracts.js";
 import {
   ConnectionControlError,
@@ -159,6 +162,11 @@ function parseMessagePath(request: FastifyRequest): { projectId: string; message
   return parsed.success ? parsed.data : null;
 }
 
+function parsePulseBlockerPath(request: FastifyRequest): { projectId: string; reportId: string } | null {
+  const parsed = pulseBlockerPathSchema.safeParse(request.params);
+  return parsed.success ? parsed.data : null;
+}
+
 function parseReadQuery(
   query: unknown,
   options: {
@@ -194,6 +202,15 @@ function invalidRequest(request: FastifyRequest, reply: FastifyReply) {
 function controlFailure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
   if (error instanceof ProjectReadUnavailableError) {
     return sendWebHttpError(request, reply, 503, "CONTROL_UNAVAILABLE");
+  }
+  if (error instanceof PulseResolutionError) {
+    switch (error.code) {
+      case "PROJECT_NOT_FOUND":
+      case "BLOCKER_NOT_FOUND":
+        return sendWebHttpError(request, reply, 404, error.code);
+      case "BLOCKER_STATE_CONFLICT":
+        return sendWebHttpError(request, reply, 409, error.code);
+    }
   }
   if (!(error instanceof ControlProjectError) && !(error instanceof ConnectionControlError)) {
     return sendWebHttpError(request, reply, 503, "CONTROL_UNAVAILABLE");
@@ -251,6 +268,11 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
       record: async () => {},
       recordBestEffort: async () => {},
     },
+    ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
+  });
+  const pulseResolutionService = createPulseResolutionService({
+    db: dependencies.db,
+    audit: dependencies.auditService,
     ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
   });
   const noStore = (_request: FastifyRequest, reply: FastifyReply, done: () => void) => {
@@ -387,6 +409,24 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
       const project = await projectService.get({ userId: request.webSession.userId, projectId });
       if (project === null) return sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
       return reply.send(await pulseService.getDailyPulse(projectId, date));
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/pulse/blockers/:reportId/resolve", mutationOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const path = parsePulseBlockerPath(request);
+    const body = resolvePulseBlockerBodySchema.safeParse(request.body);
+    if (path === null || !body.success || !emptyQuery(request.query)) return invalidRequest(request, reply);
+    try {
+      return reply.send(await pulseResolutionService.resolveBlocker({
+        projectId: path.projectId,
+        reportId: path.reportId,
+        ownerUserId: request.webSession.userId,
+        note: body.data.note,
+        requestId: request.id,
+      }));
     } catch (error) {
       return controlFailure(error, request, reply);
     }

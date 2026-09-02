@@ -18,6 +18,7 @@ export {
   projectResponseSchema,
   sessionResponseSchema,
   dailyPulseResponseSchema,
+  pulseBlockerResolutionResponseSchema,
 } from "../../../shared/control-api";
 
 export type {
@@ -38,6 +39,7 @@ export type {
   Project,
   ProjectListResponse,
   PulseAgentSummary,
+  PulseBlockerResolutionResponse,
   PulseConnectionSummary,
   PulseDeveloperSummary,
   SessionResponse,

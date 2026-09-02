@@ -2,6 +2,7 @@ export const auditEventTypes = [
   "auth.login_succeeded", "auth.login_failed", "auth.logout",
   "project.created", "project.archived", "project.restored", "project.deleted",
   "connection.created", "connection.revoked",
+  "pulse.blocker_resolved",
   "operator.user_blocked", "operator.user_unblocked", "operator.project_archived",
   "operator.project_owner_assigned",
 ] as const;

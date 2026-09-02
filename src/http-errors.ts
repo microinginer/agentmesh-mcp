@@ -15,6 +15,8 @@ export type WebHttpErrorCode =
   | "PROJECT_CONFIRMATION_MISMATCH"
   | "CONNECTION_NOT_FOUND"
   | "CONNECTION_STATE_CONFLICT"
+  | "BLOCKER_NOT_FOUND"
+  | "BLOCKER_STATE_CONFLICT"
   | "RECENT_AUTH_REQUIRED"
   | "CONTROL_UNAVAILABLE";
 
@@ -33,6 +35,8 @@ const messages: Record<WebHttpErrorCode, string> = {
   PROJECT_CONFIRMATION_MISMATCH: "Project name confirmation did not match",
   CONNECTION_NOT_FOUND: "Connection was not found",
   CONNECTION_STATE_CONFLICT: "Connection lifecycle state conflict",
+  BLOCKER_NOT_FOUND: "Blocker was not found",
+  BLOCKER_STATE_CONFLICT: "Only an unresolved blocker from an offline agent can be resolved",
   RECENT_AUTH_REQUIRED: "Recent GitHub authentication is required",
   CONTROL_UNAVAILABLE: "Control plane is temporarily unavailable",
 };

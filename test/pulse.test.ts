@@ -17,6 +17,9 @@ describe("createPulseService aggregation & reporting", () => {
         testStatus: { passed: 5, failed: 0 },
         state: "in_progress",
         blockerReason: null,
+        resolvedAt: null,
+        resolvedByUserId: null,
+        resolutionNote: null,
         createdAt: new Date("2026-09-02T10:00:00.000Z"),
       },
       {
@@ -29,6 +32,9 @@ describe("createPulseService aggregation & reporting", () => {
         testStatus: { passed: 12, failed: 0 },
         state: "completed",
         blockerReason: null,
+        resolvedAt: null,
+        resolvedByUserId: null,
+        resolutionNote: null,
         createdAt: new Date("2026-09-02T14:30:00.000Z"),
       },
       {
@@ -41,6 +47,9 @@ describe("createPulseService aggregation & reporting", () => {
         testStatus: { passed: 2, failed: 1 },
         state: "blocked",
         blockerReason: "Postgres deadlock on migration lock table",
+        resolvedAt: null,
+        resolvedByUserId: null,
+        resolutionNote: null,
         createdAt: new Date("2026-09-02T11:00:00.000Z"),
       },
     ];

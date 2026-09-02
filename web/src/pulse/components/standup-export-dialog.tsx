@@ -42,7 +42,7 @@ export function generateStandupMarkdown(pulse: DailyPulseResponse): string {
 
         md += `- [${agent.name} / ${agent.client}] ${summary}${goal}${tests}${files}\n`;
 
-        if (agent.latest_progress?.state === "blocked") {
+        if (agent.latest_progress?.state === "blocked" && agent.latest_progress.resolved_at === null) {
           md += `  ⚠️ **BLOCKER:** ${agent.latest_progress.blocker_reason ?? "Requires attention"}\n`;
         }
       }

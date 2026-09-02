@@ -235,12 +235,15 @@ export const pulseTestStatusSchema = z.object({
 }).strict();
 
 export const pulseProgressReportSchema = z.object({
+  id: uuid,
   summary: z.string(),
   state: z.enum(["in_progress", "blocked", "completed", "idle"]),
   blocker_reason: z.string().nullable(),
   test_status: pulseTestStatusSchema.nullable(),
   files_touched: z.array(z.string()),
   reported_at: timestamp,
+  resolved_at: timestamp.nullable(),
+  resolution_note: z.string().nullable(),
 }).strict();
 
 export const pulseHistoryItemSchema = z.object({
@@ -249,6 +252,16 @@ export const pulseHistoryItemSchema = z.object({
   summary: z.string(),
   state: z.enum(["in_progress", "blocked", "completed", "idle"]),
   blocker_reason: z.string().nullable(),
+  resolved_at: timestamp.nullable(),
+  resolution_note: z.string().nullable(),
+}).strict();
+
+export const pulseBlockerResolutionResponseSchema = z.object({
+  blocker: z.object({
+    id: uuid,
+    resolved_at: timestamp,
+    resolution_note: z.string().nullable(),
+  }).strict(),
 }).strict();
 
 export const pulseAgentSchema = z.object({
@@ -308,6 +321,7 @@ export type Connection = z.infer<typeof connectionSchema>;
 export type ConnectionListResponse = z.infer<typeof connectionListResponseSchema>;
 export type IssueConnectionResponse = z.infer<typeof issueConnectionResponseSchema>;
 export type DailyPulseResponse = z.infer<typeof dailyPulseResponseSchema>;
+export type PulseBlockerResolutionResponse = z.infer<typeof pulseBlockerResolutionResponseSchema>;
 export type PulseDeveloperSummary = z.infer<typeof pulseDeveloperSchema>;
 export type PulseConnectionSummary = z.infer<typeof pulseConnectionSchema>;
 export type PulseAgentSummary = z.infer<typeof pulseAgentSchema>;

@@ -76,7 +76,9 @@ function AgentRow({ agent }: { agent: PulseAgentSummary }) {
         </div>
         <div className="shrink-0 flex items-center justify-end gap-2 flex-wrap">
           <StateBadge state={agent.status} />
-          {latest && <StateBadge state={latest.state} />}
+          {latest && (latest.resolved_at !== null
+            ? <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[11px]">Resolved</Badge>
+            : <StateBadge state={latest.state} />)}
         </div>
       </div>
 
@@ -97,9 +99,15 @@ function AgentRow({ agent }: { agent: PulseAgentSummary }) {
             {latest.summary}
           </p>
 
-          {latest.state === "blocked" && latest.blocker_reason && (
+          {latest.state === "blocked" && latest.blocker_reason && latest.resolved_at === null && (
             <div className="break-anywhere p-2 rounded bg-red-500/10 border border-red-500/20 text-red-700 dark:text-red-300 font-medium">
               ⚠️ Blocker: {latest.blocker_reason}
+            </div>
+          )}
+
+          {latest.resolved_at !== null && (
+            <div className="break-anywhere p-2 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-medium">
+              ✓ Resolved{latest.resolution_note ? `: ${latest.resolution_note}` : ""}
             </div>
           )}
 

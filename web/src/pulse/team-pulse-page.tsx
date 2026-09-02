@@ -9,7 +9,13 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
-import { dailyPulseResponseSchema, projectResponseSchema, type DailyPulseResponse } from "@/api/schemas";
+import {
+  dailyPulseResponseSchema,
+  projectResponseSchema,
+  pulseBlockerResolutionResponseSchema,
+  type DailyPulseResponse,
+  type Project,
+} from "@/api/schemas";
 import { useSession } from "@/auth/session-store";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -49,7 +55,7 @@ export function TeamPulsePage() {
   const todayStr = new Date().toISOString().slice(0, 10);
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [pulse, setPulse] = useState<DailyPulseResponse | null>(null);
-  const [projectName, setProjectName] = useState<string>();
+  const [project, setProject] = useState<Project>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,10 +82,10 @@ export function TeamPulsePage() {
 
   useEffect(() => {
     let current = true;
-    setProjectName(undefined);
+    setProject(undefined);
     if (!projectId) return () => { current = false; };
     void api.query(`/api/v1/projects/${projectId}`, projectResponseSchema)
-      .then((response) => { if (current) setProjectName(response.project.name); })
+      .then((response) => { if (current) setProject(response.project); })
       .catch(() => { /* Pulse remains usable if only project metadata is unavailable. */ });
     return () => { current = false; };
   }, [api, projectId]);
@@ -87,11 +93,20 @@ export function TeamPulsePage() {
   const handlePrevDay = () => setSelectedDate((curr) => shiftDate(curr, -1));
   const handleNextDay = () => setSelectedDate((curr) => shiftDate(curr, 1));
   const handleToday = () => setSelectedDate(todayStr);
+  const handleResolveBlocker = async (reportId: string, note: string) => {
+    if (!projectId) return;
+    await api.mutate(
+      `/api/v1/projects/${projectId}/pulse/blockers/${reportId}/resolve`,
+      { method: "POST", body: { note } },
+      pulseBlockerResolutionResponseSchema,
+    );
+    await fetchPulse(selectedDate);
+  };
 
   return (
     <ProjectShell
       {...(projectId === undefined ? {} : { projectId })}
-      {...(projectName === undefined ? {} : { projectName })}
+      {...(project === undefined ? {} : { projectName: project.name, canEdit: project.can_edit })}
     >
       <div className="team-pulse-page space-y-6">
         {/* Page Header */}
@@ -171,7 +186,11 @@ export function TeamPulsePage() {
         ) : pulse ? (
           <div className="space-y-6">
             {/* Blocker Radar Banner (if any) */}
-            <BlockerRadar pulse={pulse} />
+            <BlockerRadar
+              pulse={pulse}
+              canEdit={project?.can_edit === true}
+              onResolve={handleResolveBlocker}
+            />
 
             {/* Metrics Overview */}
             <PulseSummaryCards pulse={pulse} />
