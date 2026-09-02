@@ -9,7 +9,13 @@ import type { WebAuthConfig } from "../src/config.js";
 import { createControlProjectService } from "../src/control/project-service.js";
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { auditEvents, oauthIdentities, projects, users } from "../src/db/schema.js";
+import {
+  auditEvents,
+  oauthIdentities,
+  projectMemberships,
+  projects,
+  users,
+} from "../src/db/schema.js";
 import { buildHttpApp } from "../src/http.js";
 import { createProjectService } from "../src/projects/service.js";
 import type { GitHubOAuthClient } from "../src/web-auth/github-client.js";
@@ -78,6 +84,22 @@ function ownerHeaders(owner: { cookie: string; csrf: string }) {
 }
 
 describe("owner project lifecycle service", () => {
+  it("creates exactly one owner membership with a new project", async () => {
+    const owner = await createUser("Membership owner");
+    const service = serviceWith({ projectLimit: 5 });
+
+    const created = await service.create(createInput(owner.id, 1));
+
+    expect(await database.db.select().from(projectMemberships)).toEqual([
+      expect.objectContaining({
+        projectId: created.id,
+        userId: owner.id,
+        role: "owner",
+        createdBy: owner.id,
+      }),
+    ]);
+  });
+
   it("never exceeds five active projects under eight concurrent creates", async () => {
     const owner = await createUser("Owner");
     const service = serviceWith({ projectLimit: 5 });
@@ -113,7 +135,7 @@ describe("owner project lifecycle service", () => {
     );
 
     expect(created).toHaveLength(8);
-    const listed = await service.list({ ownerUserId: owner.id, limit: 100 });
+    const listed = await service.list({ userId: owner.id, limit: 100 });
     expect(listed.projects).toHaveLength(8);
     expect(listed.activeCount).toBe(8);
     expect(listed.projectLimit).toBe(0);
@@ -144,14 +166,14 @@ describe("owner project lifecycle service", () => {
     ]);
     const service = serviceWith({ projectLimit: 5 });
 
-    const first = await service.list({ ownerUserId: owner.id, limit: 1 });
+    const first = await service.list({ userId: owner.id, limit: 1 });
     expect(first.projects.map((item) => item.id)).toEqual([newerArchivedId]);
     expect(first.defaultProject?.id).toBe(olderActiveId);
     expect(first.nextCursor).toEqual(expect.any(String));
     if (first.nextCursor === null) throw new Error("Expected a second project page");
 
     const second = await service.list({
-      ownerUserId: owner.id,
+      userId: owner.id,
       limit: 1,
       cursor: first.nextCursor,
     });
@@ -235,9 +257,9 @@ describe("owner project lifecycle service", () => {
     const legacyId = randomUUID();
     await database.db.insert(projects).values({ id: legacyId, name: "legacy" });
 
-    expect(await service.get({ ownerUserId: ownerB.id, projectId: projectA.id })).toBeNull();
-    expect(await service.get({ ownerUserId: ownerA.id, projectId: legacyId })).toBeNull();
-    expect((await service.list({ ownerUserId: ownerA.id, limit: 50 })).projects.map((row) => row.id)).toEqual([
+    expect(await service.get({ userId: ownerB.id, projectId: projectA.id })).toBeNull();
+    expect(await service.get({ userId: ownerA.id, projectId: legacyId })).toBeNull();
+    expect((await service.list({ userId: ownerA.id, limit: 50 })).projects.map((row) => row.id)).toEqual([
       projectA.id,
     ]);
     await expect(service.archive({
@@ -325,7 +347,7 @@ describe("owner project lifecycle service", () => {
       authenticatedAt: recent,
       requestId: randomUUID(),
     })).resolves.toBeUndefined();
-    expect(await service.get({ ownerUserId: owner.id, projectId: project.id })).toBeNull();
+    expect(await service.get({ userId: owner.id, projectId: project.id })).toBeNull();
     const [deletedAudit] = await database.db.select().from(auditEvents).where(
       eq(auditEvents.eventType, "project.deleted"),
     );
@@ -349,7 +371,7 @@ describe("owner project lifecycle service", () => {
       authenticatedAt: new Date(fixedNow),
       requestId: randomUUID(),
     })).rejects.toMatchObject({ code: "RECENT_AUTH_REQUIRED" });
-    expect(await valid.get({ ownerUserId: owner.id, projectId: project.id })).not.toBeNull();
+    expect(await valid.get({ userId: owner.id, projectId: project.id })).not.toBeNull();
   });
 
   it("rolls back both domain mutation and its audit when transactional auditing fails", async () => {
@@ -565,6 +587,106 @@ describe("owner project HTTP routes", () => {
       expect(deleted.statusCode).toBe(204);
       expect(deleted.headers["cache-control"]).toBe("no-store");
       expect(deleted.body).toBe("");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("lets a viewer list and get a shared project without changing owner quota metadata", async () => {
+    const { app, owner } = await buildOwnerApp();
+    try {
+      const ownerA = await owner("Shared owner", "1101");
+      const viewer = await owner("Shared viewer", "1102");
+      const outsider = await owner("Outsider", "1103");
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/projects",
+        headers: { ...ownerHeaders(ownerA), "idempotency-key": randomUUID() },
+        payload: { name: "Shared project", description: null },
+      });
+      const projectId = created.json().project.id as string;
+      await database.db.insert(projectMemberships).values({
+        projectId,
+        userId: viewer.user.id,
+        role: "viewer",
+        createdBy: ownerA.user.id,
+      });
+
+      const v1 = await app.inject({
+        method: "GET",
+        url: "/api/v1/projects?limit=50",
+        headers: { cookie: viewer.cookie },
+      });
+      expect(v1.statusCode).toBe(200);
+      expect(v1.json()).toMatchObject({
+        projects: [{ id: projectId }],
+        active_count: 0,
+        project_limit: 5,
+      });
+
+      const v2 = await app.inject({
+        method: "GET",
+        url: "/api/v2/projects?limit=50",
+        headers: { cookie: viewer.cookie },
+      });
+      expect(v2.statusCode).toBe(200);
+      expect(v2.json()).toMatchObject({
+        projects: [{ id: projectId }],
+        active_count: 0,
+        default_project: { id: projectId },
+      });
+
+      const detail = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${projectId}`,
+        headers: { cookie: viewer.cookie },
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json()).toMatchObject({ project: { id: projectId } });
+
+      const archiveDenied = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${projectId}/archive`,
+        headers: ownerHeaders(viewer),
+      });
+      expect(archiveDenied.statusCode).toBe(404);
+
+      const deleteDenied = await app.inject({
+        method: "DELETE",
+        url: `/api/v1/projects/${projectId}`,
+        headers: ownerHeaders(viewer),
+        payload: { confirm_name: "Shared project" },
+      });
+      expect(deleteDenied.statusCode).toBe(404);
+
+      const archived = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${projectId}/archive`,
+        headers: ownerHeaders(ownerA),
+      });
+      expect(archived.statusCode).toBe(200);
+
+      const restoreDenied = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${projectId}/restore`,
+        headers: ownerHeaders(viewer),
+      });
+      expect(restoreDenied.statusCode).toBe(404);
+
+      const restored = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${projectId}/restore`,
+        headers: ownerHeaders(ownerA),
+      });
+      expect(restored.statusCode).toBe(200);
+
+      const denied = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${projectId}`,
+        headers: { cookie: outsider.cookie },
+      });
+      expect(denied.statusCode).toBe(404);
+      expect(denied.json()).toMatchObject({ error: { code: "PROJECT_NOT_FOUND" } });
     } finally {
       await app.close();
     }

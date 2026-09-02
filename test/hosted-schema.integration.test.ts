@@ -10,6 +10,7 @@ import {
   agents,
   oauthIdentities,
   oauthAttempts,
+  projectMemberships,
   projectTokens,
   projects,
   users,
@@ -17,7 +18,10 @@ import {
 } from "../src/db/schema.js";
 import { createAuditService } from "../src/audit/service.js";
 import { resetDatabase } from "./support/database.js";
-import { createLegacyMigrationFixture } from "./support/legacy-migrations.js";
+import {
+  createLegacyMigrationFixture,
+  createMigrationFixtureThrough,
+} from "./support/legacy-migrations.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ??
@@ -37,6 +41,39 @@ afterAll(async () => {
 });
 
 describe("hosted control-plane schema", () => {
+  it("backfills owner memberships while leaving ownerless projects without members", async () => {
+    const fixture = await createMigrationFixtureThrough(databaseUrl, 8);
+    const ownerId = randomUUID();
+    const ownedProjectId = randomUUID();
+    const ownerlessProjectId = randomUUID();
+
+    try {
+      await fixture.database.pool.query(
+        "INSERT INTO users (id, display_name) VALUES ($1, $2)",
+        [ownerId, "Existing owner"],
+      );
+      await fixture.database.pool.query(
+        `INSERT INTO projects (id, owner_user_id, name)
+         VALUES ($1, $2, $3), ($4, NULL, $5)`,
+        [ownedProjectId, ownerId, "owned", ownerlessProjectId, "ownerless"],
+      );
+
+      await fixture.migrateHosted();
+      await fixture.migrateHosted();
+
+      expect(await fixture.database.db.select().from(projectMemberships)).toEqual([
+        expect.objectContaining({
+          projectId: ownedProjectId,
+          userId: ownerId,
+          role: "owner",
+          createdBy: ownerId,
+        }),
+      ]);
+    } finally {
+      await fixture.destroy();
+    }
+  });
+
   it("preserves legacy projects while enforcing durable hosted identities", async () => {
     const legacyId = randomUUID();
     await database.db.insert(projects).values({ id: legacyId, name: "legacy" });

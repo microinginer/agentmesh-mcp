@@ -3,7 +3,8 @@ import { and, count, desc, eq, getTableColumns, lt, or, sql } from "drizzle-orm"
 import { decodeAdminCursor, encodeAdminCursor } from "../admin/contracts.js";
 import type { AuditService } from "../audit/service.js";
 import type { AgentMeshDatabase } from "../db/client.js";
-import { projects, users } from "../db/schema.js";
+import { projectMemberships, projects, users } from "../db/schema.js";
+import { projectReadPredicate } from "./project-access.js";
 
 const RECENT_AUTH_WINDOW_MS = 15 * 60 * 1_000;
 
@@ -115,7 +116,7 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
     }
   }
 
-  async function list(input: { ownerUserId: string; limit: number; cursor?: string }) {
+  async function list(input: { userId: string; limit: number; cursor?: string }) {
     return db.transaction(async (transaction) => {
       const cursor = input.cursor === undefined ? undefined : decodeAdminCursor(input.cursor);
       const createdAt = sql<string>`to_char(${projects.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
@@ -124,7 +125,7 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
         cursorCreatedAt: createdAt,
       }).from(projects).where(
         and(
-          eq(projects.ownerUserId, input.ownerUserId),
+          projectReadPredicate(input.userId),
           cursor?.kind === "created"
             ? or(
                 lt(createdAt, cursor.created_at),
@@ -134,11 +135,11 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
         ),
       ).orderBy(desc(projects.createdAt), desc(projects.id)).limit(input.limit + 1);
       const [active] = await transaction.select({ value: count() }).from(projects).where(and(
-        eq(projects.ownerUserId, input.ownerUserId),
+        eq(projects.ownerUserId, input.userId),
         eq(projects.status, "active"),
       ));
       const [defaultActiveProject] = await transaction.select().from(projects).where(and(
-        eq(projects.ownerUserId, input.ownerUserId),
+        projectReadPredicate(input.userId),
         eq(projects.status, "active"),
       )).orderBy(desc(projects.createdAt), desc(projects.id)).limit(1);
       const page = rows.slice(0, input.limit);
@@ -159,11 +160,10 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
     });
   }
 
-  async function get(input: { ownerUserId: string; projectId: string }): Promise<PublicControlProject | null> {
-    const [project] = await db.select().from(projects).where(and(
-      eq(projects.id, input.projectId),
-      eq(projects.ownerUserId, input.ownerUserId),
-    )).limit(1);
+  async function get(input: { userId: string; projectId: string }): Promise<PublicControlProject | null> {
+    const [project] = await db.select().from(projects).where(
+      projectReadPredicate(input.userId, input.projectId),
+    ).limit(1);
     return project === undefined ? null : publicProject(project);
   }
 
@@ -190,6 +190,14 @@ export function createControlProjectService(dependencies: ControlProjectServiceD
         updatedAt: now,
       }).returning();
       if (created === undefined) throw new ControlProjectError("CONTROL_UNAVAILABLE");
+      await transaction.insert(projectMemberships).values({
+        projectId: created.id,
+        userId: input.ownerUserId,
+        role: "owner",
+        createdBy: input.ownerUserId,
+        createdAt: now,
+        updatedAt: now,
+      });
       await audit.record({
         userId: input.ownerUserId,
         projectId: created.id,

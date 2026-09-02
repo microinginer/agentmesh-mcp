@@ -4,7 +4,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { agents, messages, projects, projectTokens } from "../src/db/schema.js";
+import {
+  agents,
+  messages,
+  projectMemberships,
+  projects,
+  projectTokens,
+  users,
+} from "../src/db/schema.js";
 import { resetDatabase } from "./support/database.js";
 
 const databaseUrl =
@@ -48,6 +55,40 @@ describe("PostgreSQL tenant invariants", () => {
       "users",
       "web_sessions",
     ]);
+  });
+
+  it("enforces project membership roles and one membership per user and project", async () => {
+    const [owner, viewer] = await database.db.insert(users).values([
+      { displayName: "Owner" },
+      { displayName: "Viewer" },
+    ]).returning();
+    if (owner === undefined || viewer === undefined) throw new Error("user insert failed");
+    const [project] = await database.db.insert(projects).values({
+      ownerUserId: owner.id,
+      name: "shared",
+    }).returning();
+    if (project === undefined) throw new Error("project insert failed");
+
+    await expect(database.db.insert(projectMemberships).values({
+      projectId: project.id,
+      userId: viewer.id,
+      role: "viewer",
+      createdBy: owner.id,
+    })).resolves.toBeDefined();
+
+    await expect(database.db.insert(projectMemberships).values({
+      projectId: project.id,
+      userId: viewer.id,
+      role: "owner",
+      createdBy: owner.id,
+    })).rejects.toMatchObject({ cause: { code: "23505" } });
+
+    await expect(database.db.insert(projectMemberships).values({
+      projectId: project.id,
+      userId: owner.id,
+      role: "editor",
+      createdBy: owner.id,
+    })).rejects.toMatchObject({ cause: { code: "23514" } });
   });
 
   it("enforces registration uniqueness within a project but not across projects", async () => {

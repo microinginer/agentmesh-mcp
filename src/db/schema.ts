@@ -14,6 +14,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -86,6 +87,28 @@ export const projects = pgTable("projects", {
     table.ownerUserId,
     table.createIdempotencyKey,
   ),
+]);
+
+export const projectMemberships = pgTable("project_memberships", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  role: varchar("role", { length: 32 }).notNull(),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("project_memberships_project_user_unique").on(table.projectId, table.userId),
+  check(
+    "project_memberships_role_check",
+    sql`${table.role} IN ('viewer', 'owner')`,
+  ),
+  index("project_memberships_user_id_idx").on(table.userId),
+  index("project_memberships_project_id_idx").on(table.projectId),
 ]);
 
 export const blackboardEntries = pgTable(

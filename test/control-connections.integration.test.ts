@@ -20,6 +20,7 @@ import { migrateDatabase } from "../src/db/migrate.js";
 import {
   auditEvents,
   oauthIdentities,
+  projectMemberships,
   projectTokens,
   projects,
   users,
@@ -213,7 +214,7 @@ describe("named connection service", () => {
       secretRecoverable: false,
     });
 
-    const listed = await service.list({ ownerUserId: owner.id, projectId: project.id, limit: 50 });
+    const listed = await service.list({ userId: owner.id, projectId: project.id, limit: 50 });
     expect(listed).toEqual([
       expect.objectContaining({ id: results[0]?.connectionId, status: "active" }),
     ]);
@@ -231,10 +232,10 @@ describe("named connection service", () => {
     const querySpy = vi.spyOn(database.pool, "query");
 
     try {
-      await expect(service.list({ ownerUserId: owner.id, projectId: active.id, limit: 50 }))
+      await expect(service.list({ userId: owner.id, projectId: active.id, limit: 50 }))
         .resolves.toEqual([expect.objectContaining({ id: issued.connectionId })]);
       await expect(service.list({
-        ownerUserId: owner.id,
+        userId: owner.id,
         projectId: archivedWithoutConnections.id,
         limit: 50,
       })).resolves.toEqual([]);
@@ -344,7 +345,7 @@ describe("named connection service", () => {
       await expect(service.issue(invalid)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     }
     for (const limit of [0, 101, 1.5]) {
-      await expect(service.list({ ownerUserId: ownerA.id, projectId: active.id, limit }))
+      await expect(service.list({ userId: ownerA.id, projectId: active.id, limit }))
         .rejects.toMatchObject({ code: "INVALID_REQUEST" });
     }
     await expect(serviceWith({ tokenTtlDays: 0 }).issue(issueInput(ownerA.id, active.id)))
@@ -654,12 +655,19 @@ describe("connection HTTP routes", () => {
     return { app, owner };
   }
 
-  it("issues once, lists only safe metadata, revokes independently, and hides foreign projects", async () => {
+  it("lets viewers list safe metadata while keeping issue and revoke owner-only", async () => {
     const { app, owner } = await buildOwnerApp();
     try {
       const ownerA = await owner("Owner A", "7001");
-      const ownerB = await owner("Owner B", "7002");
+      const viewer = await owner("Viewer", "7002");
+      const outsider = await owner("Outsider", "7003");
       const project = await createOwnedProject(ownerA.user.id);
+      await database.db.insert(projectMemberships).values({
+        projectId: project.id,
+        userId: viewer.user.id,
+        role: "viewer",
+        createdBy: ownerA.user.id,
+      });
       const key = randomUUID();
       const issued = await app.inject({
         method: "POST",
@@ -703,14 +711,38 @@ describe("connection HTTP routes", () => {
       expect(list.json()).toEqual({ connections: [replay.json().connection] });
       expect(JSON.stringify(list.json())).not.toMatch(/digest|secret|am_proj_/i);
 
+      const viewerList = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${project.id}/connections`,
+        headers: { cookie: viewer.cookie },
+      });
+      expect(viewerList.statusCode).toBe(200);
+      expect(viewerList.headers["cache-control"]).toBe("no-store");
+      expect(viewerList.json()).toEqual({ connections: [replay.json().connection] });
+      expect(JSON.stringify(viewerList.json())).not.toMatch(/digest|secret|am_proj_/i);
+
       const foreign = await app.inject({
         method: "GET",
         url: `/api/v1/projects/${project.id}/connections`,
-        headers: { cookie: ownerB.cookie },
+        headers: { cookie: outsider.cookie },
       });
       expect(foreign.statusCode).toBe(404);
-      expect(foreign.headers["cache-control"]).toBe("no-store");
       expect(foreign.json()).toMatchObject({ error: { code: "PROJECT_NOT_FOUND" } });
+
+      const issueDenied = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${project.id}/connections`,
+        headers: mutationHeaders(viewer, randomUUID()),
+        payload: { label: "Viewer must not issue" },
+      });
+      expect(issueDenied.statusCode).toBe(404);
+
+      const revokeDenied = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${project.id}/connections/${connectionId}/revoke`,
+        headers: mutationHeaders(viewer),
+      });
+      expect(revokeDenied.statusCode).toBe(404);
 
       const revoked = await app.inject({
         method: "POST",

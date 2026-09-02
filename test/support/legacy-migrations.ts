@@ -8,7 +8,7 @@ import { Pool } from "pg";
 import { createDatabase, type DatabaseConnection } from "../../src/db/client.js";
 import { migrateDatabase } from "../../src/db/migrate.js";
 
-interface LegacyMigrationFixture {
+export interface LegacyMigrationFixture {
   database: DatabaseConnection;
   migrateHosted(): Promise<void>;
   destroy(): Promise<void>;
@@ -17,7 +17,7 @@ interface LegacyMigrationFixture {
 interface MigrationJournal {
   version: string;
   dialect: string;
-  entries: Array<{ idx: number }>;
+  entries: Array<{ idx: number; tag: string }>;
 }
 
 function migrationDatabaseUrl(baseUrl: string, databaseName: string): string {
@@ -26,32 +26,36 @@ function migrationDatabaseUrl(baseUrl: string, databaseName: string): string {
   return url.toString();
 }
 
-async function createLegacyMigrationsFolder(): Promise<{ root: string; folder: string }> {
+async function createMigrationsFolderThrough(
+  lastMigrationIndex: number,
+): Promise<{ root: string; folder: string }> {
   const root = await mkdtemp(join(tmpdir(), "agentmesh-legacy-migrations-"));
   const folder = join(root, "drizzle");
   const metaFolder = join(folder, "meta");
   const sourceFolder = resolve(process.cwd(), "drizzle");
 
   await cp(sourceFolder, folder, { recursive: true });
-  await Promise.all([
-    rm(join(folder, "0003_hosted_control_plane.sql"), { force: true }),
-    rm(join(metaFolder, "0003_snapshot.json"), { force: true }),
-  ]);
   const journalPath = join(metaFolder, "_journal.json");
   const journal = JSON.parse(await readFile(journalPath, "utf8")) as MigrationJournal;
-  journal.entries = journal.entries.filter((entry) => entry.idx <= 2);
+  const removedEntries = journal.entries.filter((entry) => entry.idx > lastMigrationIndex);
+  await Promise.all(removedEntries.flatMap((entry) => [
+    rm(join(folder, `${entry.tag}.sql`), { force: true }),
+    rm(join(metaFolder, `${String(entry.idx).padStart(4, "0")}_snapshot.json`), { force: true }),
+  ]));
+  journal.entries = journal.entries.filter((entry) => entry.idx <= lastMigrationIndex);
   await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
 
   return { root, folder };
 }
 
-export async function createLegacyMigrationFixture(
+export async function createMigrationFixtureThrough(
   testDatabaseUrl: string,
+  lastMigrationIndex: number,
 ): Promise<LegacyMigrationFixture> {
   const databaseName = `agentmesh_legacy_${randomUUID().replaceAll("-", "")}`;
   const migrationDatabase = migrationDatabaseUrl(testDatabaseUrl, databaseName);
   const provisioner = new Pool({ connectionString: testDatabaseUrl });
-  const migrations = await createLegacyMigrationsFolder();
+  const migrations = await createMigrationsFolderThrough(lastMigrationIndex);
   let database: DatabaseConnection | undefined;
 
   try {
@@ -76,4 +80,10 @@ export async function createLegacyMigrationFixture(
       await rm(migrations.root, { recursive: true, force: true });
     },
   };
+}
+
+export async function createLegacyMigrationFixture(
+  testDatabaseUrl: string,
+): Promise<LegacyMigrationFixture> {
+  return createMigrationFixtureThrough(testDatabaseUrl, 2);
 }
