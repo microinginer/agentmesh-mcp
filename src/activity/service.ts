@@ -11,6 +11,7 @@ const agentMeshErrorCodes = new Set<AgentMeshErrorCode>([
   "REGISTRATION_CONFLICT",
   "TARGET_AGENT_INVALID",
   "IDEMPOTENCY_CONFLICT",
+  "VERSION_CONFLICT",
   "INTERNAL_ERROR",
 ]);
 
@@ -64,6 +65,19 @@ function safeMetadata(metadata: unknown): ActivityMetadata {
   }
   if (typeof candidate.deduplicated === "boolean") {
     safe.deduplicated = candidate.deduplicated;
+  }
+  if (typeof candidate.blackboard_namespace === "string") {
+    safe.blackboard_namespace = candidate.blackboard_namespace;
+  }
+  if (typeof candidate.blackboard_key === "string") {
+    safe.blackboard_key = candidate.blackboard_key;
+  }
+  if (
+    typeof candidate.blackboard_version === "number"
+    && Number.isInteger(candidate.blackboard_version)
+    && candidate.blackboard_version > 0
+  ) {
+    safe.blackboard_version = candidate.blackboard_version;
   }
   return safe;
 }

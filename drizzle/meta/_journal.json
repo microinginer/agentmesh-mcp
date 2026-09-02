@@ -57,6 +57,13 @@
       "when": 1788157550255,
       "tag": "0007_purple_wong",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788303499271,
+      "tag": "0008_useful_the_hunter",
+      "breakpoints": true
     }
   ]
 }

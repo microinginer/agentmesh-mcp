@@ -10,7 +10,12 @@ import {
 
 import { createActivityService, type ActivityService } from "../activity/service.js";
 import { createAgentService } from "../agents/service.js";
+import { createBlackboardService } from "../blackboard/service.js";
 import {
+  blackboardGetFactsInputSchema,
+  blackboardGetFactsOutputSchema,
+  blackboardSetFactInputSchema,
+  blackboardSetFactOutputSchema,
   listAgentsInputSchema,
   listAgentsOutputSchema,
   sendInputSchema,
@@ -117,6 +122,7 @@ export function buildMcpHandler({ db, signingKey, logger }: McpHandlerDependenci
   });
   const agentService = createAgentService({ db, signingKey, activity });
   const messageService = createMessageService({ db, agentService, activity });
+  const blackboardService = createBlackboardService({ db, agentService, activity });
 
   return createMcpHandler(({ authInfo }) => {
     const authenticatedProjectId = authInfo?.clientId;
@@ -184,6 +190,54 @@ export function buildMcpHandler({ db, signingKey, logger }: McpHandlerDependenci
           activity,
           logger,
           domainFailureRecordedByService: true,
+        });
+      },
+    );
+
+    server.registerTool(
+      "agentmesh_set_fact",
+      {
+        description:
+          "Save or update a shared project fact, API contract, or architecture decision.",
+        inputSchema: blackboardSetFactInputSchema,
+        outputSchema: blackboardSetFactOutputSchema,
+      },
+      async (input) => {
+        const context = { requestId: randomUUID() };
+        const projectId = requireProjectId();
+        return runTool(async () => ({
+          ok: true,
+          data: await blackboardService.setFact(projectId, input, context),
+        }), {
+          projectId,
+          requestId: context.requestId,
+          activity,
+          logger,
+          domainFailureRecordedByService: false,
+        });
+      },
+    );
+
+    server.registerTool(
+      "agentmesh_get_facts",
+      {
+        description:
+          "Retrieve shared project facts, API contracts, or environment notes.",
+        inputSchema: blackboardGetFactsInputSchema,
+        outputSchema: blackboardGetFactsOutputSchema,
+      },
+      async (input) => {
+        const context = { requestId: randomUUID() };
+        const projectId = requireProjectId();
+        return runTool(async () => ({
+          ok: true,
+          data: await blackboardService.getFacts(projectId, input),
+        }), {
+          projectId,
+          requestId: context.requestId,
+          activity,
+          logger,
+          domainFailureRecordedByService: false,
         });
       },
     );

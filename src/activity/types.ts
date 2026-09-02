@@ -5,6 +5,8 @@ export const activityEventTypes = [
   "message.sent",
   "message.send_failed",
   "message.acknowledged",
+  "blackboard.fact_set",
+  "blackboard.fact_deleted",
   "mcp.request_failed",
 ] as const;
 
@@ -17,6 +19,9 @@ export interface ActivityMetadata {
   acknowledged_count?: number;
   poll_limit?: number;
   deduplicated?: boolean;
+  blackboard_namespace?: string;
+  blackboard_key?: string;
+  blackboard_version?: number;
 }
 
 export interface OperationContext {

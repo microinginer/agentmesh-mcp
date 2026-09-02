@@ -4,6 +4,7 @@ export type AgentMeshErrorCode =
   | "REGISTRATION_CONFLICT"
   | "TARGET_AGENT_INVALID"
   | "IDEMPOTENCY_CONFLICT"
+  | "VERSION_CONFLICT"
   | "INTERNAL_ERROR";
 
 export class AgentMeshError extends Error {
