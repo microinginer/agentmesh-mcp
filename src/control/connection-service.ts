@@ -5,6 +5,7 @@ import { createProjectToken } from "../auth/project-token.js";
 import { uuidV4Schema } from "../contracts.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { projectTokens, projects, users } from "../db/schema.js";
+import { projectReadPredicate } from "./project-access.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const MAX_TOKEN_TTL_DAYS = 3_650;
@@ -67,7 +68,7 @@ interface IssueConnectionInput {
 }
 
 interface ListConnectionsInput {
-  ownerUserId: string;
+  userId: string;
   projectId: string;
   limit: number;
 }
@@ -249,7 +250,7 @@ export function createConnectionService(dependencies: ConnectionServiceDependenc
 
   async function list(input: ListConnectionsInput): Promise<PublicControlConnection[]> {
     if (
-      !validUuid(input.ownerUserId)
+      !validUuid(input.userId)
       || !validUuid(input.projectId)
       || !Number.isInteger(input.limit)
       || input.limit < 1
@@ -269,7 +270,7 @@ export function createConnectionService(dependencies: ConnectionServiceDependenc
       .leftJoin(projectTokens, eq(projectTokens.projectId, projects.id))
       .where(and(
         eq(projects.id, input.projectId),
-        eq(projects.ownerUserId, input.ownerUserId),
+        projectReadPredicate(input.userId, input.projectId),
         isNull(users.blockedAt),
       ))
       .orderBy(desc(projectTokens.createdAt), desc(projectTokens.id))

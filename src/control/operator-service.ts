@@ -13,6 +13,7 @@ import {
   agents,
   messages,
   oauthIdentities,
+  projectMemberships,
   projectTokens,
   projects,
   users,
@@ -454,6 +455,14 @@ export function createOperatorService(dependencies: OperatorServiceDependencies)
       if (assigned === undefined || assigned.ownerUserId === null) {
         throw new OperatorControlError("PROJECT_NOT_FOUND");
       }
+      await transaction.insert(projectMemberships).values({
+        projectId: assigned.id,
+        userId: assigned.ownerUserId,
+        role: "owner",
+        createdBy: assigned.ownerUserId,
+        createdAt: now,
+        updatedAt: now,
+      });
       await audit.record({
         subjectUserId: destination.id,
         actor: { kind: "headless_cli" },

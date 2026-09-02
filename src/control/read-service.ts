@@ -28,12 +28,13 @@ import {
 import { uuidV4Schema } from "../contracts.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { activityEvents, agents, messages, projects, projectTokens } from "../db/schema.js";
+import { projectReadPredicate } from "./project-access.js";
 
 const ONLINE_WINDOW_MS = 5 * 60 * 1_000;
 const IDLE_WINDOW_MS = 30 * 60 * 1_000;
 
 export type ProjectReadScope =
-  | { kind: "owner"; userId: string }
+  | { kind: "user"; userId: string }
   | { kind: "operator" };
 
 type Presence = "online" | "idle" | "offline";
@@ -113,8 +114,8 @@ function validScope(scope: ProjectReadScope): boolean {
 }
 
 function scopePredicate(scope: ProjectReadScope, projectId: string): SQL {
-  return scope.kind === "owner"
-    ? and(eq(projects.id, projectId), eq(projects.ownerUserId, scope.userId))!
+  return scope.kind === "user"
+    ? projectReadPredicate(scope.userId, projectId)
     : eq(projects.id, projectId);
 }
 
@@ -157,6 +158,7 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
       archived_at: projects.archivedAt,
       created_at: createdAt,
       updated_at: projects.updatedAt,
+      owner_user_id: projects.ownerUserId,
     }).from(projects).where(scopePredicate(scope, projectId)).limit(1);
     if (project === undefined) return { found: false as const };
 
@@ -191,14 +193,16 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
           gte(activityEvents.createdAt, new Date(now.getTime() - 24 * 60 * 60 * 1_000)),
         )),
     ]);
+    const { owner_user_id: ownerUserId, ...publicProject } = project;
 
     return {
       found: true as const,
       data: {
         project: {
-          ...project,
+          ...publicProject,
           archived_at: project.archived_at?.toISOString() ?? null,
           updated_at: project.updated_at.toISOString(),
+          can_edit: scope.kind === "user" && ownerUserId === scope.userId,
         },
         agents: agentCounts ?? { online: 0, idle: 0, offline: 0, total: 0 },
         messages: messageCounts ?? { total: 0, unacknowledged: 0 },
@@ -309,8 +313,8 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
     ) {
       return { found: false as const };
     }
-    const sender = alias(agents, scope.kind === "owner" ? "owner_message_sender" : "operator_message_sender");
-    const recipient = alias(agents, scope.kind === "owner" ? "owner_message_recipient" : "operator_message_recipient");
+    const sender = alias(agents, scope.kind === "user" ? "user_message_sender" : "operator_message_sender");
+    const recipient = alias(agents, scope.kind === "user" ? "user_message_recipient" : "operator_message_recipient");
     const order = query.after === undefined ? desc(messages.sequence) : asc(messages.sequence);
     const filters = messageFilters(scope, projectId, query);
 
@@ -324,7 +328,7 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
       created_at: messages.createdAt,
       acknowledged_at: messages.acknowledgedAt,
     };
-    const rows = scope.kind === "owner"
+    const rows = scope.kind === "user"
       ? await db.select({ ...baseSelection, text: messages.text }).from(messages)
           .innerJoin(projects, eq(projects.id, messages.projectId))
           .innerJoin(sender, and(eq(sender.id, messages.senderAgentId), eq(sender.projectId, messages.projectId)))
@@ -344,7 +348,7 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
       id: row.id,
       sender: { id: row.sender_id, name: row.sender_name },
       recipient: { id: row.recipient_id, name: row.recipient_name },
-      ...(scope.kind === "owner" && "text" in row && typeof row.text === "string"
+      ...(scope.kind === "user" && "text" in row && typeof row.text === "string"
         ? { preview: previewMessage(row.text) }
         : {}),
       created_at: row.created_at.toISOString(),
@@ -366,8 +370,8 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
     ) {
       return { found: false as const };
     }
-    const sender = alias(agents, scope.kind === "owner" ? "owner_message_detail_sender" : "operator_message_detail_sender");
-    const recipient = alias(agents, scope.kind === "owner" ? "owner_message_detail_recipient" : "operator_message_detail_recipient");
+    const sender = alias(agents, scope.kind === "user" ? "user_message_detail_sender" : "operator_message_detail_sender");
+    const recipient = alias(agents, scope.kind === "user" ? "user_message_detail_recipient" : "operator_message_detail_recipient");
     const baseSelection = {
       sequence: messages.sequence,
       id: messages.id,
@@ -378,7 +382,7 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
       created_at: messages.createdAt,
       acknowledged_at: messages.acknowledgedAt,
     };
-    const rows = scope.kind === "owner"
+    const rows = scope.kind === "user"
       ? await db.select({ ...baseSelection, text: messages.text }).from(messages)
           .innerJoin(projects, eq(projects.id, messages.projectId))
           .innerJoin(sender, and(eq(sender.id, messages.senderAgentId), eq(sender.projectId, messages.projectId)))
@@ -406,7 +410,7 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
         id: row.id,
         sender: { id: row.sender_id, name: row.sender_name },
         recipient: { id: row.recipient_id, name: row.recipient_name },
-        ...(scope.kind === "owner" && "text" in row && typeof row.text === "string"
+        ...(scope.kind === "user" && "text" in row && typeof row.text === "string"
           ? { text: row.text }
           : {}),
         created_at: row.created_at.toISOString(),
@@ -426,8 +430,8 @@ export function createProjectReadService(dependencies: ProjectReadServiceDepende
     ) {
       return { found: false as const };
     }
-    const actor = alias(agents, scope.kind === "owner" ? "owner_event_actor" : "operator_event_actor");
-    const target = alias(agents, scope.kind === "owner" ? "owner_event_target" : "operator_event_target");
+    const actor = alias(agents, scope.kind === "user" ? "user_event_actor" : "operator_event_actor");
+    const target = alias(agents, scope.kind === "user" ? "user_event_target" : "operator_event_target");
     const cursorValue = query.cursor ?? query.after;
     const cursor = cursorValue === undefined ? undefined : decodeAdminCursor(cursorValue);
     const filters: SQL[] = [scopePredicate(scope, projectId), eq(activityEvents.projectId, projectId)];

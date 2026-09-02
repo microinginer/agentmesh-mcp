@@ -22,6 +22,7 @@ import {
   agents,
   messages,
   oauthIdentities,
+  projectMemberships,
   projectTokens,
   projects,
   users,
@@ -58,6 +59,7 @@ afterAll(async () => {
 interface ReadFixture {
   ownerA: string;
   ownerB: string;
+  viewer: string;
   projectA: string;
   projectB: string;
   archivedA: string;
@@ -72,15 +74,19 @@ interface ReadFixture {
 }
 
 async function seedReadFixture(): Promise<ReadFixture> {
-  const [ownerA, ownerB] = await database.db.insert(users).values([
+  const [ownerA, ownerB, viewer] = await database.db.insert(users).values([
     { displayName: "Owner A" },
     { displayName: "Owner B" },
+    { displayName: "Viewer" },
   ]).returning();
-  if (ownerA === undefined || ownerB === undefined) throw new Error("owner insert failed");
+  if (ownerA === undefined || ownerB === undefined || viewer === undefined) {
+    throw new Error("user insert failed");
+  }
 
   const fixture = {
     ownerA: ownerA.id,
     ownerB: ownerB.id,
+    viewer: viewer.id,
     projectA: randomUUID(),
     projectB: randomUUID(),
     archivedA: randomUUID(),
@@ -201,7 +207,7 @@ describe("scope-aware project reads", () => {
         schema,
       }),
     });
-    const ownerScope = { kind: "owner" as const, userId: fixture.ownerA };
+    const ownerScope = { kind: "user" as const, userId: fixture.ownerA };
 
     const overview = await service.getOverview(ownerScope, fixture.projectA);
     const listedAgents = await service.listAgents(ownerScope, fixture.projectA, { limit: 50 });
@@ -254,8 +260,8 @@ describe("scope-aware project reads", () => {
   it("never returns another owner's messages or connection provenance after ownership changes", async () => {
     const fixture = await seedReadFixture();
     const service = createProjectReadService({ db: database.db, clock: () => now });
-    const ownerA = { kind: "owner" as const, userId: fixture.ownerA };
-    const ownerB = { kind: "owner" as const, userId: fixture.ownerB };
+    const ownerA = { kind: "user" as const, userId: fixture.ownerA };
+    const ownerB = { kind: "user" as const, userId: fixture.ownerB };
 
     expect(await service.listMessages(ownerB, fixture.projectA, { limit: 50 })).toEqual({ found: false });
     expect(await service.getMessage(ownerB, fixture.projectA, fixture.messageA)).toEqual({ found: false });
@@ -302,7 +308,7 @@ describe("scope-aware project reads", () => {
   it("keeps sequence cursors bounded and owner filters drainable", async () => {
     const fixture = await seedReadFixture();
     const service = createProjectReadService({ db: database.db, clock: () => now });
-    const owner = { kind: "owner" as const, userId: fixture.ownerA };
+    const owner = { kind: "user" as const, userId: fixture.ownerA };
     const first = await service.listMessages(owner, fixture.projectA, { limit: 1 });
     if (!first.found) throw new Error("project must be readable");
     const sequence = first.data.items[0]?.sequence ?? 0;
@@ -343,6 +349,7 @@ describe("owner read HTTP routes", () => {
     await database.db.insert(oauthIdentities).values([
       { userId: fixture.ownerA, provider: "github", providerUserId: "7001", login: "owner-a" },
       { userId: fixture.ownerB, provider: "github", providerUserId: "7002", login: "owner-b" },
+      { userId: fixture.viewer, provider: "github", providerUserId: "7003", login: "viewer" },
     ]);
     await database.db.insert(agentProgressReports).values({
       projectId: fixture.projectA,
@@ -355,6 +362,12 @@ describe("owner read HTTP routes", () => {
       blockerReason: "Waiting for review",
       createdAt: new Date("2026-08-31T11:55:00.000Z"),
     });
+    await database.db.insert(projectMemberships).values({
+      projectId: fixture.projectA,
+      userId: fixture.viewer,
+      role: "viewer",
+      createdBy: fixture.ownerA,
+    });
     const clock = createTestClock(now.toISOString());
     const config = webConfig();
     const sessionService = createWebSessionService({
@@ -364,7 +377,10 @@ describe("owner read HTTP routes", () => {
     });
     const sessionA = await sessionService.issue(fixture.ownerA, clock.now());
     const sessionB = await sessionService.issue(fixture.ownerB, clock.now());
-    if (sessionA === null || sessionB === null) throw new Error("session issue failed");
+    const viewerSession = await sessionService.issue(fixture.viewer, clock.now());
+    if (sessionA === null || sessionB === null || viewerSession === null) {
+      throw new Error("session issue failed");
+    }
     const app = buildHttpApp({
       db: database.db,
       signingKey,
@@ -386,6 +402,7 @@ describe("owner read HTTP routes", () => {
     try {
       const cookieA = `agentmesh_session=${sessionA.sessionToken}`;
       const cookieB = `agentmesh_session=${sessionB.sessionToken}`;
+      const viewerCookie = `agentmesh_session=${viewerSession.sessionToken}`;
       for (const path of [
         `/api/v1/projects/${fixture.projectA}/overview`,
         `/api/v1/projects/${fixture.projectA}/agents`,
@@ -396,6 +413,22 @@ describe("owner read HTTP routes", () => {
         `/api/v1/projects/${fixture.archivedA}/overview`,
       ]) {
         const response = await app.inject({ method: "GET", url: path, headers: { cookie: cookieA } });
+        expect(response.statusCode).toBe(200);
+        expect(response.headers["cache-control"]).toBe("no-store");
+      }
+      for (const path of [
+        `/api/v1/projects/${fixture.projectA}/overview`,
+        `/api/v1/projects/${fixture.projectA}/agents`,
+        `/api/v1/projects/${fixture.projectA}/messages`,
+        `/api/v1/projects/${fixture.projectA}/messages/${fixture.messageA}`,
+        `/api/v1/projects/${fixture.projectA}/events`,
+        `/api/v1/projects/${fixture.projectA}/pulse?date=2026-08-31`,
+      ]) {
+        const response = await app.inject({
+          method: "GET",
+          url: path,
+          headers: { cookie: viewerCookie },
+        });
         expect(response.statusCode).toBe(200);
         expect(response.headers["cache-control"]).toBe("no-store");
       }
@@ -429,6 +462,13 @@ describe("owner read HTTP routes", () => {
         url: `/api/v1/projects/${fixture.projectA}/overview`,
         headers: { cookie: cookieA },
       });
+      expect(overview.json()).toMatchObject({ overview: { project: { can_edit: true } } });
+      const viewerOverview = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${fixture.projectA}/overview`,
+        headers: { cookie: viewerCookie },
+      });
+      expect(viewerOverview.json()).toMatchObject({ overview: { project: { can_edit: false } } });
       expect(() => overviewResponseSchema.parse(overview.json())).not.toThrow();
       const events = await app.inject({
         method: "GET",

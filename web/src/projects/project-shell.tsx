@@ -23,6 +23,7 @@ import { useSession } from "@/auth/session-store";
 import { Brand } from "@/components/brand";
 import { useTheme, type ThemePreference } from "@/components/theme-provider";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -52,6 +53,7 @@ interface ShellProps {
   children: ReactNode;
   projectId?: string;
   projectName?: string;
+  canEdit?: boolean;
 }
 
 const themeLabels: Record<ThemePreference, string> = {
@@ -106,7 +108,7 @@ function AccountMenu() {
   );
 }
 
-function Navigation({ projectId }: { projectId?: string }) {
+function Navigation({ projectId, canEdit = true }: { projectId?: string; canEdit?: boolean }) {
   const location = useLocation();
   if (projectId === undefined) {
     return (
@@ -125,7 +127,7 @@ function Navigation({ projectId }: { projectId?: string }) {
     { to: `${base}/messages`, label: "Messages", icon: MessageCircleIcon },
     { to: `${base}/activity`, label: "Activity", icon: ActivityIcon },
     { to: `${base}/connections`, label: "Connections", icon: LinkIcon },
-    { to: `${base}/settings`, label: "Settings", icon: SettingsIcon },
+    ...(canEdit ? [{ to: `${base}/settings`, label: "Settings", icon: SettingsIcon }] : []),
   ];
   return (
     <nav className="workspace-nav" aria-label="Project navigation">
@@ -263,13 +265,13 @@ function ProjectSwitcher({ projectId, projectName = "Projects" }: { projectId?: 
   );
 }
 
-export function ProjectShell({ children, projectId, projectName }: ShellProps) {
+export function ProjectShell({ children, projectId, projectName, canEdit = true }: ShellProps) {
   return (
     <div className="workspace-shell">
       <aside className="workspace-rail">
         <Brand linked />
         <ProjectSwitcher {...(projectId === undefined ? {} : { projectId })} {...(projectName === undefined ? {} : { projectName })} />
-        <Navigation {...(projectId === undefined ? {} : { projectId })} />
+        <Navigation {...(projectId === undefined ? {} : { projectId })} canEdit={canEdit} />
         <div className="workspace-rail__account"><AccountMenu /></div>
       </aside>
       <header className="mobile-header">
@@ -286,13 +288,21 @@ export function ProjectShell({ children, projectId, projectName }: ShellProps) {
               <SheetTitle>AgentMesh navigation</SheetTitle>
               <SheetDescription>Move between your project workspace and account controls.</SheetDescription>
             </SheetHeader>
-            <Navigation {...(projectId === undefined ? {} : { projectId })} />
+            <Navigation {...(projectId === undefined ? {} : { projectId })} canEdit={canEdit} />
             <Separator />
             <div className="mobile-sheet__account"><AccountMenu /></div>
           </SheetContent>
         </Sheet>
       </header>
-      <main className="workspace-main">{children}</main>
+      <main className="workspace-main">
+        {!canEdit && projectId !== undefined ? (
+          <Alert className="readonly-project-notice">
+            <AlertTitle>Read-only access</AlertTitle>
+            <AlertDescription>You can view this shared project, but only its owner can make changes.</AlertDescription>
+          </Alert>
+        ) : null}
+        {children}
+      </main>
     </div>
   );
 }

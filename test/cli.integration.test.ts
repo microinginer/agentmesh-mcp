@@ -9,7 +9,14 @@ import { parseCliProjectLimit, runCli } from "../src/cli.js";
 import { createOperatorService, OperatorControlError } from "../src/control/operator-service.js";
 import { createDatabase, type AgentMeshDatabase } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
-import { auditEvents, oauthIdentities, projectTokens, projects, users } from "../src/db/schema.js";
+import {
+  auditEvents,
+  oauthIdentities,
+  projectMemberships,
+  projectTokens,
+  projects,
+  users,
+} from "../src/db/schema.js";
 import { createProjectService } from "../src/projects/service.js";
 import { resetDatabase } from "./support/database.js";
 
@@ -205,6 +212,14 @@ describe("agentmesh project assign-owner CLI", () => {
     })]);
     const [project] = await database.db.select().from(projects).where(eq(projects.id, projectId));
     expect(project?.ownerUserId).toBe(owner.id);
+    expect(await database.db.select().from(projectMemberships)).toEqual([
+      expect.objectContaining({
+        projectId,
+        userId: owner.id,
+        role: "owner",
+        createdBy: owner.id,
+      }),
+    ]);
     expect(await database.db.select().from(auditEvents)).toEqual([
       expect.objectContaining({
         userId: owner.id,

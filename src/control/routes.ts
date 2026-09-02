@@ -65,6 +65,7 @@ function publicProject(project: PublicControlProject) {
     archived_at: project.archivedAt,
     created_at: project.createdAt,
     updated_at: project.updatedAt,
+    can_edit: project.canEdit,
   };
 }
 
@@ -278,7 +279,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     if (query === null) return invalidRequest(request, reply);
     try {
       const result = await projectService.list({
-        ownerUserId: request.webSession.userId,
+        userId: request.webSession.userId,
         limit: query.limit,
         ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
       });
@@ -298,7 +299,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     if (query === null) return invalidRequest(request, reply);
     try {
       const result = await projectService.list({
-        ownerUserId: request.webSession.userId,
+        userId: request.webSession.userId,
         limit: query.limit,
         ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
       });
@@ -341,7 +342,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     const projectId = parsePath(request);
     if (projectId === null || !emptyQuery(request.query)) return invalidRequest(request, reply);
     try {
-      const project = await projectService.get({ ownerUserId: request.webSession.userId, projectId });
+      const project = await projectService.get({ userId: request.webSession.userId, projectId });
       return project === null
         ? sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND")
         : reply.send({ project: publicProject(project) });
@@ -356,7 +357,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     if (projectId === null || !emptyQuery(request.query)) return invalidRequest(request, reply);
     try {
       const result = await readService.getOverview(
-        { kind: "owner", userId: request.webSession.userId },
+        { kind: "user", userId: request.webSession.userId },
         projectId,
       );
       return result.found
@@ -383,7 +384,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     const date = typeof query?.date === "string" ? query.date : undefined;
     if (date !== undefined && !validUtcDateString(date)) return invalidRequest(request, reply);
     try {
-      const project = await projectService.get({ ownerUserId: request.webSession.userId, projectId });
+      const project = await projectService.get({ userId: request.webSession.userId, projectId });
       if (project === null) return sendWebHttpError(request, reply, 404, "PROJECT_NOT_FOUND");
       return reply.send(await pulseService.getDailyPulse(projectId, date));
     } catch (error) {
@@ -399,7 +400,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     if (projectId === null || parsed === null || !parsed.success) return invalidRequest(request, reply);
     try {
       const result = await readService.listAgents(
-        { kind: "owner", userId: request.webSession.userId },
+        { kind: "user", userId: request.webSession.userId },
         projectId,
         parsed.data,
       );
@@ -423,7 +424,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     if (projectId === null || parsed === null || !parsed.success) return invalidRequest(request, reply);
     try {
       const result = await readService.listMessages(
-        { kind: "owner", userId: request.webSession.userId },
+        { kind: "user", userId: request.webSession.userId },
         projectId,
         parsed.data,
       );
@@ -441,7 +442,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     if (path === null || !emptyQuery(request.query)) return invalidRequest(request, reply);
     try {
       const result = await readService.getMessage(
-        { kind: "owner", userId: request.webSession.userId },
+        { kind: "user", userId: request.webSession.userId },
         path.projectId,
         path.messageId,
       );
@@ -464,7 +465,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     if (projectId === null || parsed === null || !parsed.success) return invalidRequest(request, reply);
     try {
       const result = await readService.listEvents(
-        { kind: "owner", userId: request.webSession.userId },
+        { kind: "user", userId: request.webSession.userId },
         projectId,
         parsed.data,
       );
@@ -505,7 +506,7 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     if (projectId === null || query === null) return invalidRequest(request, reply);
     try {
       const connections = await connectionService.list({
-        ownerUserId: request.webSession.userId,
+        userId: request.webSession.userId,
         projectId,
         limit: connectionListQuerySchema.parse(query).limit,
       });

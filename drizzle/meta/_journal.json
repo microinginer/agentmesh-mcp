@@ -71,6 +71,13 @@
       "when": 1788307092898,
       "tag": "0009_team_pulse",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788316778296,
+      "tag": "0010_handy_romulus",
+      "breakpoints": true
     }
   ]
 }
