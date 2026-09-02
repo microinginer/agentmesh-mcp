@@ -9,7 +9,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
-import { dailyPulseResponseSchema, type DailyPulseResponse } from "@/api/schemas";
+import { dailyPulseResponseSchema, projectResponseSchema, type DailyPulseResponse } from "@/api/schemas";
 import { useSession } from "@/auth/session-store";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -49,6 +49,7 @@ export function TeamPulsePage() {
   const todayStr = new Date().toISOString().slice(0, 10);
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [pulse, setPulse] = useState<DailyPulseResponse | null>(null);
+  const [projectName, setProjectName] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -73,13 +74,26 @@ export function TeamPulsePage() {
     void fetchPulse(selectedDate);
   }, [fetchPulse, selectedDate]);
 
+  useEffect(() => {
+    let current = true;
+    setProjectName(undefined);
+    if (!projectId) return () => { current = false; };
+    void api.query(`/api/v1/projects/${projectId}`, projectResponseSchema)
+      .then((response) => { if (current) setProjectName(response.project.name); })
+      .catch(() => { /* Pulse remains usable if only project metadata is unavailable. */ });
+    return () => { current = false; };
+  }, [api, projectId]);
+
   const handlePrevDay = () => setSelectedDate((curr) => shiftDate(curr, -1));
   const handleNextDay = () => setSelectedDate((curr) => shiftDate(curr, 1));
   const handleToday = () => setSelectedDate(todayStr);
 
   return (
-    <ProjectShell {...(projectId === undefined ? {} : { projectId })}>
-      <div className="space-y-6 pb-12">
+    <ProjectShell
+      {...(projectId === undefined ? {} : { projectId })}
+      {...(projectName === undefined ? {} : { projectName })}
+    >
+      <div className="team-pulse-page space-y-6">
         {/* Page Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
@@ -165,9 +179,9 @@ export function TeamPulsePage() {
             {/* Developers Activity Section */}
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h2 className="text-base font-semibold flex items-center gap-2">
+                <h2 className="min-w-0 text-base font-semibold flex items-center gap-2">
                   <UsersIcon className="size-4 text-muted-foreground" />
-                  <span>Team Members & Sessions ({pulse.developers.length})</span>
+                  <span className="break-anywhere">Team Members & Sessions ({pulse.developers.length})</span>
                 </h2>
               </div>
 

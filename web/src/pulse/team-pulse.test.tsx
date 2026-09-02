@@ -7,6 +7,15 @@ import { session, TestApp } from "@/test/render";
 import { generateStandupMarkdown } from "./components/standup-export-dialog";
 
 const projectId = "00000000-0000-4000-8000-000000000010";
+const activeProject = {
+  id: projectId,
+  name: "skills-and-mcp",
+  description: "AgentMesh collaboration workspace",
+  status: "active",
+  archived_at: null,
+  created_at: "2026-09-01T10:00:00.000Z",
+  updated_at: "2026-09-02T10:00:00.000Z",
+};
 
 function requestPath(input: RequestInfo | URL): string {
   const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
@@ -63,6 +72,7 @@ describe("TeamPulsePage", () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const path = requestPath(input);
       if (path === "/api/v1/session") return Response.json(session);
+      if (path === `/api/v1/projects/${projectId}`) return Response.json({ project: activeProject });
       if (path === `/api/v1/projects/${projectId}/pulse?date=${today}`) {
         return Response.json(pulseFor(today));
       }
@@ -76,6 +86,7 @@ describe("TeamPulsePage", () => {
     render(<TestApp initialEntries={[`/app/projects/${projectId}/pulse`]} />);
 
     expect(await screen.findByRole("heading", { name: "Team Pulse" })).toBeInTheDocument();
+    expect(await screen.findAllByRole("button", { name: "Current project: skills-and-mcp" })).toHaveLength(2);
     expect(await screen.findByText(`Pulse update for ${today}`)).toBeInTheDocument();
     expect(screen.getAllByText(/Waiting for review/).length).toBeGreaterThan(0);
     expect(screen.getByText("Ship Team Pulse")).toBeInTheDocument();
@@ -87,6 +98,32 @@ describe("TeamPulsePage", () => {
       `/api/v1/projects/${projectId}/pulse?date=${previousDay}`,
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  it("contains long progress content inside padded mobile-safe cards", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const longToken = "very-long-unbroken-progress-description-".repeat(8);
+    const pulse = pulseFor(today);
+    const agent = pulse.developers[0]!.connections[0]!.agents[0]!;
+    agent.current_goal = longToken;
+    agent.latest_progress!.summary = longToken;
+    agent.latest_progress!.files_touched = [`web/src/${longToken}/component.tsx`];
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = requestPath(input);
+      if (path === "/api/v1/session") return Response.json(session);
+      if (path === `/api/v1/projects/${projectId}`) return Response.json({ project: activeProject });
+      if (path === `/api/v1/projects/${projectId}/pulse?date=${today}`) return Response.json(pulse);
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+
+    const { container } = render(<TestApp initialEntries={[`/app/projects/${projectId}/pulse`]} />);
+
+    expect(await screen.findByText(longToken, { selector: "span" })).toHaveClass("break-anywhere");
+    expect(screen.getByText(longToken, { selector: "p" })).toHaveClass("break-anywhere");
+    expect(screen.getByText(`web/src/${longToken}/component.tsx`, { selector: ".max-w-full" })).toHaveClass("break-anywhere", "max-w-full");
+    expect(container.querySelector(".team-pulse-page")).toBeInTheDocument();
+    expect(container.querySelector(".pulse-agent-card")).toHaveClass("min-w-0", "overflow-hidden");
   });
 });
 

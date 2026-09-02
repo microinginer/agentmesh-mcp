@@ -250,6 +250,7 @@ p { margin: 0; }
 .account-trigger > span:nth-of-type(2) { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; text-align: left; }
 .mobile-header { display: none; }
 .workspace-main { min-width: 0; }
+.break-anywhere { overflow-wrap: anywhere; word-break: break-word; }
 
 .page-heading { display: flex; flex-direction: column; gap: 0.4rem; }
 .page-heading h1 { font-size: clamp(2rem, 4vw, 2.5rem); font-weight: 650; letter-spacing: -0.045em; }
@@ -277,7 +278,7 @@ p { margin: 0; }
 .status-text { color: var(--muted-foreground); font-size: 0.8rem; text-transform: capitalize; }
 .status-text--active { color: var(--success); }
 
-.overview-page, .connections-page, .activity-page, .settings-page { width: min(100% - 4rem, 78rem); margin: 0 auto; padding: 2.6rem 0 4rem; }
+.overview-page, .connections-page, .activity-page, .settings-page, .team-pulse-page { width: min(100% - 4rem, 78rem); margin: 0 auto; padding: 2.6rem 0 4rem; }
 .overview-page > [data-slot="separator"] { margin: 1.5rem 0; }
 .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 0.75rem 0 1.8rem; border-bottom: 1px solid var(--border); }
 .summary-item { display: grid; min-height: 6rem; grid-template-columns: auto 1fr; align-items: center; gap: 0.9rem; padding: 0.5rem 1.3rem; border-right: 1px solid var(--border); }
@@ -435,7 +436,7 @@ p { margin: 0; }
   .mobile-header .project-switcher { min-width: 0; padding-inline: 0.65rem; }
   .mobile-header .brand > span:last-child { display: none; }
   .projects-loading, .overview-loading, .connections-loading { padding: 2rem 1.25rem; }
-  .onboarding, .projects-page, .overview-page, .connections-page, .activity-page, .settings-page { width: 100%; padding: 2rem 1.25rem 3rem; }
+  .onboarding, .projects-page, .overview-page, .connections-page, .activity-page, .settings-page, .team-pulse-page { width: 100%; padding: 2rem 1.25rem 3rem; }
   .onboarding { min-height: calc(100svh - 72px); }
   .page-heading--action { flex-direction: column; align-items: stretch; }
   .page-heading--action > a, .page-heading--action > button { align-self: flex-start; }
