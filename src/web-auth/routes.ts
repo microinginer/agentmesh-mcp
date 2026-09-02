@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { AuditService } from "../audit/service.js";
 import type { WebAuthConfig } from "../config.js";
+import { createProjectMembershipService, ProjectMembershipError } from "../control/membership-service.js";
 import type { AgentMeshDatabase } from "../db/client.js";
 import { sendWebHttpError } from "../http-errors.js";
 import { latin1WireByteLength } from "../http-wire.js";
@@ -15,6 +16,7 @@ import { deriveWebAuthKeys } from "./session-token.js";
 
 const OAUTH_ATTEMPT_MAX_AGE_SECONDS = 5 * 60;
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+const INVITATION_MAX_AGE_SECONDS = 30 * 60;
 const MAX_COOKIE_HEADER_LENGTH = 8_192;
 const MAX_COOKIE_FIELDS = 4;
 const MAX_QUERY_LENGTH = 4_096;
@@ -37,6 +39,7 @@ export interface WebAuthRouteDependencies {
 interface CookieNames {
   oauth: string;
   session: string;
+  invitation: string;
 }
 
 interface ParsedQuery {
@@ -45,8 +48,16 @@ interface ParsedQuery {
 
 function cookieNames(secureCookies: boolean): CookieNames {
   return secureCookies
-    ? { oauth: "__Host-agentmesh_oauth", session: "__Host-agentmesh_session" }
-    : { oauth: "agentmesh_oauth", session: "agentmesh_session" };
+    ? {
+        oauth: "__Host-agentmesh_oauth",
+        session: "__Host-agentmesh_session",
+        invitation: "__Host-agentmesh_invite",
+      }
+    : {
+        oauth: "agentmesh_oauth",
+        session: "agentmesh_session",
+        invitation: "agentmesh_invite",
+      };
 }
 
 function cookieOptions(secure: boolean, maxAge?: number) {
@@ -224,6 +235,11 @@ function startReturnTo(request: FastifyRequest): string {
   return safeReturnTo(selected);
 }
 
+function hasEmptyQuery(request: FastifyRequest): boolean {
+  const query = strictQuery(request.raw.url ?? "");
+  return query !== null && Object.keys(query).length === 0;
+}
+
 type CallbackQueryResult =
   | { ok: true; value: { code: string; state: string } }
   | { ok: false; reason: "query_syntax" | "query_keys" | "code_format" | "state_format" };
@@ -264,6 +280,12 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
     oauthCookieKey: deriveWebAuthKeys(dependencies.config.authKey).oauthCookieKey,
     ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
   });
+  const memberships = createProjectMembershipService({
+    db: dependencies.db,
+    audit: dependencies.auditService,
+    publicOrigin: dependencies.config.publicOrigin,
+    ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
+  });
   const rejectedCallback = async (
     reply: FastifyReply,
     stage: "callback_cookie" | "callback_query" | "current_session",
@@ -291,6 +313,32 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
       .setCookie(names.oauth, started.attemptCookie, cookieOptions(dependencies.config.secureCookies, OAUTH_ATTEMPT_MAX_AGE_SECONDS))
       .code(302)
       .header("location", started.authorizationUrl.toString())
+      .send();
+  });
+
+  app.get("/invite/:token", async (request, reply) => {
+    reply.header("Cache-Control", noStore);
+    await dependencies.rateLimits?.inviteCapture(request, reply);
+    if (reply.sent) return;
+    const token = (request.params as { token?: unknown }).token;
+    const active = typeof token === "string" && hasEmptyQuery(request)
+      ? await memberships.capture(token)
+      : false;
+    if (!active || typeof token !== "string") {
+      return reply
+        .clearCookie(names.invitation, commonCookieOptions)
+        .code(303)
+        .header("location", "/app/invitations/accept")
+        .send();
+    }
+    return reply
+      .setCookie(
+        names.invitation,
+        token,
+        cookieOptions(dependencies.config.secureCookies, INVITATION_MAX_AGE_SECONDS),
+      )
+      .code(303)
+      .header("location", "/app/invitations/accept")
       .send();
   });
 
@@ -345,6 +393,49 @@ export function registerWebAuthRoutes(app: FastifyInstance, dependencies: WebAut
       done();
     },
   };
+
+  app.post("/api/v1/project-invitations/redeem", {
+    ...sessionRouteOptions,
+    preHandler: dependencies.rateLimits === undefined
+      ? middleware.requireMutation
+      : [middleware.requireMutation, dependencies.rateLimits.inviteRedeem],
+    bodyLimit: 4_096,
+  }, async (request, reply) => {
+    reply.header("Cache-Control", noStore);
+    if (request.webSession === null) return;
+    const clearInvitation = () => reply.clearCookie(names.invitation, commonCookieOptions);
+    const rawCookies = rawCookieFields(request);
+    const invitationCookies = cookieCandidates(rawCookies, names.invitation);
+    if (!hasEmptyQuery(request) || request.body !== undefined || rawCookies.repeated
+      || invitationCookies.invalid || invitationCookies.values.length > 1) {
+      clearInvitation();
+      return sendWebHttpError(request, reply, 400, "INVALID_REQUEST");
+    }
+    const rawToken = invitationCookies.values[0];
+    if (rawToken === undefined) {
+      clearInvitation();
+      return sendWebHttpError(request, reply, 409, "INVITATION_UNAVAILABLE");
+    }
+    try {
+      const redeemed = await memberships.redeem({
+        userId: request.webSession.userId,
+        rawToken,
+        requestId: request.id,
+      });
+      return clearInvitation().send({ project_id: redeemed.projectId });
+    } catch (error) {
+      clearInvitation();
+      if (error instanceof ProjectMembershipError) {
+        if (error.code === "ALREADY_MEMBER" || error.code === "INVITATION_UNAVAILABLE") {
+          return sendWebHttpError(request, reply, 409, error.code);
+        }
+        if (error.code === "CONTROL_UNAVAILABLE") {
+          return sendWebHttpError(request, reply, 503, error.code);
+        }
+      }
+      return sendWebHttpError(request, reply, 503, "CONTROL_UNAVAILABLE");
+    }
+  });
 
   app.get("/api/v1/session", {
     ...sessionRouteOptions,

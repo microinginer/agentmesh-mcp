@@ -16,6 +16,8 @@ getagentmesh.dev {
 
 	@oauth_callback path /auth/github/callback
 	skip_log @oauth_callback
+	@invite_capture path /invite/*
+	skip_log @invite_capture
 
 	reverse_proxy 127.0.0.1:3100 {
 		transport http {

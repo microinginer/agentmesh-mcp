@@ -33,6 +33,8 @@ const environmentSchema = z.object({
   AGENTMESH_PROJECT_LIMIT: z.string().optional(),
   AGENTMESH_TOKEN_TTL_DAYS: z.string().optional(),
   AGENTMESH_RATE_LIMIT_OAUTH_START: z.string().optional(),
+  AGENTMESH_RATE_LIMIT_INVITE_CAPTURE: z.string().optional(),
+  AGENTMESH_RATE_LIMIT_INVITE_REDEEM: z.string().optional(),
   AGENTMESH_RATE_LIMIT_OWNER_READ: z.string().optional(),
   AGENTMESH_RATE_LIMIT_OWNER_MUTATION: z.string().optional(),
   AGENTMESH_RATE_LIMIT_CONNECTION_CREATE: z.string().optional(),
@@ -55,6 +57,8 @@ const DEFAULT_TOKEN_TTL_DAYS = 90;
 
 export interface RateLimitConfig {
   oauthStart: number;
+  inviteCapture: number;
+  inviteRedeem: number;
   ownerRead: number;
   ownerMutation: number;
   connectionCreate: number;
@@ -63,6 +67,8 @@ export interface RateLimitConfig {
 
 export const DEFAULT_RATE_LIMITS: Readonly<RateLimitConfig> = Object.freeze({
   oauthStart: 20,
+  inviteCapture: 30,
+  inviteRedeem: 10,
   ownerRead: 300,
   ownerMutation: 60,
   connectionCreate: 10,
@@ -344,6 +350,16 @@ export function loadConfig(environment: Record<string, string | undefined>): Age
       parsed.data.AGENTMESH_RATE_LIMIT_OAUTH_START,
       "AGENTMESH_RATE_LIMIT_OAUTH_START",
       DEFAULT_RATE_LIMITS.oauthStart,
+    ),
+    inviteCapture: parseRateLimit(
+      parsed.data.AGENTMESH_RATE_LIMIT_INVITE_CAPTURE,
+      "AGENTMESH_RATE_LIMIT_INVITE_CAPTURE",
+      DEFAULT_RATE_LIMITS.inviteCapture,
+    ),
+    inviteRedeem: parseRateLimit(
+      parsed.data.AGENTMESH_RATE_LIMIT_INVITE_REDEEM,
+      "AGENTMESH_RATE_LIMIT_INVITE_REDEEM",
+      DEFAULT_RATE_LIMITS.inviteRedeem,
     ),
     ownerRead: parseRateLimit(
       parsed.data.AGENTMESH_RATE_LIMIT_OWNER_READ,

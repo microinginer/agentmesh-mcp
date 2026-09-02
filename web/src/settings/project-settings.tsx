@@ -21,6 +21,8 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProjectShell } from "@/projects/project-shell";
 
+import { ProjectMembersSection } from "./project-members-section";
+
 export function ProjectSettings() {
   const { projectId = "" } = useParams();
   const { api } = useSession();
@@ -111,6 +113,7 @@ export function ProjectSettings() {
         {project.status === "archived" ? (
           <Alert><ArchiveIcon /><AlertTitle>This project is archived.</AlertTitle><AlertDescription>MCP access is stopped and the project no longer uses an active slot.</AlertDescription></Alert>
         ) : null}
+        <ProjectMembersSection projectId={projectId} />
         <section className="settings-section">
           <div><h2>{project.status === "active" ? "Archive project" : "Restore project"}</h2><p>{project.status === "active" ? "Pause every MCP connection while keeping all project data." : "Return the project and its connections to active use."}</p></div>
           {project.status === "active" ? (

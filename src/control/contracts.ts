@@ -21,6 +21,16 @@ export const projectPathSchema = z.object({
   projectId: uuidV4Schema,
 }).strict();
 
+export const projectInvitationPathSchema = z.object({
+  projectId: uuidV4Schema,
+  invitationId: uuidV4Schema,
+}).strict();
+
+export const projectMemberPathSchema = z.object({
+  projectId: uuidV4Schema,
+  userId: uuidV4Schema,
+}).strict();
+
 export const pulseBlockerPathSchema = z.object({
   projectId: uuidV4Schema,
   reportId: uuidV4Schema,

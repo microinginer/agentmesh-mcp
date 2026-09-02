@@ -1,5 +1,5 @@
 import { RefreshCwIcon } from "lucide-react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 
 import { Brand, GitHubMark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,10 @@ import { useSession } from "./session-store";
 
 export function AuthGate() {
   const { state, refresh } = useSession();
+  const location = useLocation();
+  const returnPath = location.pathname === "/app" || location.pathname.startsWith("/app/")
+    ? `${location.pathname}${location.search}${location.hash}`
+    : "/app";
 
   if (state.status === "loading") {
     return (
@@ -30,7 +34,7 @@ export function AuthGate() {
         <h1>Sign in to AgentMesh</h1>
         <p>Your session has ended. Continue with GitHub to return to your workspace.</p>
         <Button asChild size="lg">
-          <a href="/auth/github/start?return_to=%2Fapp">
+          <a href={`/auth/github/start?return_to=${encodeURIComponent(returnPath)}`}>
             <GitHubMark />
             Continue with GitHub
           </a>

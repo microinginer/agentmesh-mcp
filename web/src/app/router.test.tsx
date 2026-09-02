@@ -53,6 +53,23 @@ describe("AgentMesh application router", () => {
     );
   });
 
+  it("preserves the invitation acceptance path in the GitHub sign-in target", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      error: {
+        code: "AUTH_REQUIRED",
+        message: "Authentication is required",
+        request_id: "invitation-router-test-request",
+      },
+    }, { status: 401 })));
+
+    render(<TestApp initialEntries={["/app/invitations/accept"]} />);
+
+    expect(await screen.findByRole("link", { name: "Continue with GitHub" })).toHaveAttribute(
+      "href",
+      "/auth/github/start?return_to=%2Fapp%2Finvitations%2Faccept",
+    );
+  });
+
   it("preserves a direct operator route in the GitHub sign-in target", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
       error: {

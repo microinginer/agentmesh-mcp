@@ -40,6 +40,8 @@ describe("runtime configuration", () => {
     expect(config.signingKey).toEqual(Buffer.alloc(32, 7));
     expect(config.rateLimits).toEqual({
       oauthStart: 20,
+      inviteCapture: 30,
+      inviteRedeem: 10,
       ownerRead: 300,
       ownerMutation: 60,
       connectionCreate: 10,
@@ -52,6 +54,8 @@ describe("runtime configuration", () => {
       DATABASE_URL: databaseUrl,
       AGENT_SESSION_SIGNING_KEY: key,
       AGENTMESH_RATE_LIMIT_OAUTH_START: "7",
+      AGENTMESH_RATE_LIMIT_INVITE_CAPTURE: "12",
+      AGENTMESH_RATE_LIMIT_INVITE_REDEEM: "13",
       AGENTMESH_RATE_LIMIT_OWNER_READ: "8",
       AGENTMESH_RATE_LIMIT_OWNER_MUTATION: "9",
       AGENTMESH_RATE_LIMIT_CONNECTION_CREATE: "10",
@@ -61,6 +65,8 @@ describe("runtime configuration", () => {
     expect(config.web).toBeNull();
     expect(config.rateLimits).toEqual({
       oauthStart: 7,
+      inviteCapture: 12,
+      inviteRedeem: 13,
       ownerRead: 8,
       ownerMutation: 9,
       connectionCreate: 10,
@@ -70,6 +76,8 @@ describe("runtime configuration", () => {
 
   it.each([
     ["AGENTMESH_RATE_LIMIT_OAUTH_START", "0"],
+    ["AGENTMESH_RATE_LIMIT_INVITE_CAPTURE", "-1"],
+    ["AGENTMESH_RATE_LIMIT_INVITE_REDEEM", "1.5"],
     ["AGENTMESH_RATE_LIMIT_OWNER_READ", "-1"],
     ["AGENTMESH_RATE_LIMIT_OWNER_MUTATION", "1.5"],
     ["AGENTMESH_RATE_LIMIT_CONNECTION_CREATE", "100001"],

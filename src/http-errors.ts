@@ -13,6 +13,10 @@ export type WebHttpErrorCode =
   | "PROJECT_LIMIT_REACHED"
   | "PROJECT_STATE_CONFLICT"
   | "PROJECT_CONFIRMATION_MISMATCH"
+  | "INVITATION_NOT_FOUND"
+  | "INVITATION_UNAVAILABLE"
+  | "MEMBER_NOT_FOUND"
+  | "ALREADY_MEMBER"
   | "CONNECTION_NOT_FOUND"
   | "CONNECTION_STATE_CONFLICT"
   | "BLOCKER_NOT_FOUND"
@@ -33,6 +37,10 @@ const messages: Record<WebHttpErrorCode, string> = {
   PROJECT_LIMIT_REACHED: "Active project limit reached",
   PROJECT_STATE_CONFLICT: "Project lifecycle state conflict",
   PROJECT_CONFIRMATION_MISMATCH: "Project name confirmation did not match",
+  INVITATION_NOT_FOUND: "Invitation was not found",
+  INVITATION_UNAVAILABLE: "Invitation is unavailable",
+  MEMBER_NOT_FOUND: "Project member was not found",
+  ALREADY_MEMBER: "You already have access to this project",
   CONNECTION_NOT_FOUND: "Connection was not found",
   CONNECTION_STATE_CONFLICT: "Connection lifecycle state conflict",
   BLOCKER_NOT_FOUND: "Blocker was not found",

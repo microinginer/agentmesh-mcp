@@ -111,6 +111,36 @@ export const projectMemberships = pgTable("project_memberships", {
   index("project_memberships_project_id_idx").on(table.projectId),
 ]);
 
+export const projectInvitations = pgTable("project_invitations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id")
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  role: varchar("role", { length: 32 }).notNull(),
+  tokenDigest: bytea("token_digest").notNull(),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  redeemedBy: uuid("redeemed_by").references(() => users.id),
+  redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("project_invitations_token_digest_unique").on(table.tokenDigest),
+  index("project_invitations_project_created_idx").on(table.projectId, table.createdAt),
+  index("project_invitations_expires_at_idx").on(table.expiresAt),
+  check("project_invitations_role_check", sql`${table.role} = 'viewer'`),
+  check("project_invitations_digest_length_check", sql`octet_length(${table.tokenDigest}) = 32`),
+  check(
+    "project_invitations_redemption_pair_check",
+    sql`(${table.redeemedBy} IS NULL) = (${table.redeemedAt} IS NULL)`,
+  ),
+  check(
+    "project_invitations_terminal_state_check",
+    sql`NOT (${table.redeemedAt} IS NOT NULL AND ${table.revokedAt} IS NOT NULL)`,
+  ),
+]);
+
 export const blackboardEntries = pgTable(
   "blackboard_entries",
   {
@@ -236,6 +266,8 @@ export const auditEvents = pgTable(
       sql`${table.eventType} IN (
         'auth.login_succeeded', 'auth.login_failed', 'auth.logout',
         'project.created', 'project.archived', 'project.restored', 'project.deleted',
+        'project.invitation_created', 'project.invitation_revoked', 'project.invitation_redeemed',
+        'project.viewer_removed',
         'connection.created', 'connection.revoked',
         'pulse.blocker_resolved',
         'operator.user_blocked', 'operator.user_unblocked', 'operator.project_archived',

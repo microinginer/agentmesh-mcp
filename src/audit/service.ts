@@ -56,6 +56,10 @@ function safeMetadata(metadata: unknown): AuditMetadata {
   if (typeof candidate.project_name === "string") {
     safe.project_name = candidate.project_name;
   }
+  const invitationId = safeUuid(candidate.invitation_id);
+  if (invitationId !== undefined) {
+    safe.invitation_id = invitationId;
+  }
   return safe;
 }
 
