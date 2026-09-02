@@ -21,7 +21,9 @@ import {
   createProjectBodySchema,
   deleteProjectBodySchema,
   projectIdempotencyKeySchema,
+  projectInvitationPathSchema,
   projectListQuerySchema,
+  projectMemberPathSchema,
   projectMessagePathSchema,
   projectPathSchema,
   pulseBlockerPathSchema,
@@ -33,6 +35,13 @@ import {
   type IssuedControlConnection,
   type PublicControlConnection,
 } from "./connection-service.js";
+import {
+  createProjectMembershipService,
+  ProjectMembershipError,
+  type IssuedProjectInvitation,
+  type PublicProjectInvitation,
+  type PublicProjectMember,
+} from "./membership-service.js";
 import {
   ControlProjectError,
   createControlProjectService,
@@ -81,6 +90,27 @@ function publicConnection(connection: PublicControlConnection | IssuedControlCon
     last_used_at: connection.lastUsedAt,
     revoked_at: connection.revokedAt,
     created_at: connection.createdAt,
+  };
+}
+
+function publicMember(member: PublicProjectMember) {
+  return {
+    user_id: member.userId,
+    role: member.role,
+    github_login: member.githubLogin,
+    display_name: member.displayName,
+    avatar_url: member.avatarUrl,
+    joined_at: member.joinedAt,
+  };
+}
+
+function publicInvitation(invitation: PublicProjectInvitation | IssuedProjectInvitation) {
+  return {
+    id: invitation.id,
+    role: invitation.role,
+    created_at: invitation.createdAt,
+    expires_at: invitation.expiresAt,
+    ...("url" in invitation ? { url: invitation.url } : {}),
   };
 }
 
@@ -157,6 +187,16 @@ function parseConnectionPath(request: FastifyRequest): { projectId: string; conn
   return parsed.success ? parsed.data : null;
 }
 
+function parseInvitationPath(request: FastifyRequest): { projectId: string; invitationId: string } | null {
+  const parsed = projectInvitationPathSchema.safeParse(request.params);
+  return parsed.success ? parsed.data : null;
+}
+
+function parseMemberPath(request: FastifyRequest): { projectId: string; userId: string } | null {
+  const parsed = projectMemberPathSchema.safeParse(request.params);
+  return parsed.success ? parsed.data : null;
+}
+
 function parseMessagePath(request: FastifyRequest): { projectId: string; messageId: string } | null {
   const parsed = projectMessagePathSchema.safeParse(request.params);
   return parsed.success ? parsed.data : null;
@@ -212,6 +252,19 @@ function controlFailure(error: unknown, request: FastifyRequest, reply: FastifyR
         return sendWebHttpError(request, reply, 409, error.code);
     }
   }
+  if (error instanceof ProjectMembershipError) {
+    switch (error.code) {
+      case "PROJECT_NOT_FOUND":
+      case "INVITATION_NOT_FOUND":
+      case "MEMBER_NOT_FOUND":
+        return sendWebHttpError(request, reply, 404, error.code);
+      case "INVITATION_UNAVAILABLE":
+      case "ALREADY_MEMBER":
+        return sendWebHttpError(request, reply, 409, error.code);
+      case "CONTROL_UNAVAILABLE":
+        return sendWebHttpError(request, reply, 503, error.code);
+    }
+  }
   if (!(error instanceof ControlProjectError) && !(error instanceof ConnectionControlError)) {
     return sendWebHttpError(request, reply, 503, "CONTROL_UNAVAILABLE");
   }
@@ -251,6 +304,12 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
     db: dependencies.db,
     audit: dependencies.auditService,
     tokenTtlDays: dependencies.config.tokenTtlDays,
+    ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
+  });
+  const membershipService = createProjectMembershipService({
+    db: dependencies.db,
+    audit: dependencies.auditService,
+    publicOrigin: dependencies.config.publicOrigin,
     ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
   });
   const readService = createProjectReadService({
@@ -372,6 +431,88 @@ export function registerControlRoutes(app: FastifyInstance, dependencies: Contro
       return controlFailure(error, request, reply);
     }
   });
+
+  app.get("/api/v1/projects/:projectId/members", readOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const projectId = parsePath(request);
+    if (projectId === null || !emptyQuery(request.query)) return invalidRequest(request, reply);
+    try {
+      const result = await membershipService.list({
+        ownerUserId: request.webSession.userId,
+        projectId,
+      });
+      return reply.send({
+        members: result.members.map(publicMember),
+        invitations: result.invitations.map(publicInvitation),
+      });
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/invitations", mutationOptions, async (request, reply) => {
+    if (request.webSession === null) return;
+    const projectId = parsePath(request);
+    if (projectId === null || !emptyQuery(request.query) || request.body !== undefined) {
+      return invalidRequest(request, reply);
+    }
+    try {
+      const invitation = await membershipService.createInvitation({
+        ownerUserId: request.webSession.userId,
+        projectId,
+        requestId: request.id,
+      });
+      return reply.code(201).send({ invitation: publicInvitation(invitation) });
+    } catch (error) {
+      return controlFailure(error, request, reply);
+    }
+  });
+
+  app.delete(
+    "/api/v1/projects/:projectId/invitations/:invitationId",
+    mutationOptions,
+    async (request, reply) => {
+      if (request.webSession === null) return;
+      const path = parseInvitationPath(request);
+      if (path === null || !emptyQuery(request.query) || request.body !== undefined) {
+        return invalidRequest(request, reply);
+      }
+      try {
+        await membershipService.revokeInvitation({
+          ownerUserId: request.webSession.userId,
+          projectId: path.projectId,
+          invitationId: path.invitationId,
+          requestId: request.id,
+        });
+        return reply.code(204).send();
+      } catch (error) {
+        return controlFailure(error, request, reply);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/v1/projects/:projectId/members/:userId",
+    mutationOptions,
+    async (request, reply) => {
+      if (request.webSession === null) return;
+      const path = parseMemberPath(request);
+      if (path === null || !emptyQuery(request.query) || request.body !== undefined) {
+        return invalidRequest(request, reply);
+      }
+      try {
+        await membershipService.removeViewer({
+          ownerUserId: request.webSession.userId,
+          projectId: path.projectId,
+          userId: path.userId,
+          requestId: request.id,
+        });
+        return reply.code(204).send();
+      } catch (error) {
+        return controlFailure(error, request, reply);
+      }
+    },
+  );
 
   app.get("/api/v1/projects/:projectId/overview", readOptions, async (request, reply) => {
     if (request.webSession === null) return;

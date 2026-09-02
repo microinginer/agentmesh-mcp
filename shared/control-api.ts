@@ -106,6 +106,36 @@ export const projectListResponseSchema = z.object({
 
 export const projectResponseSchema = z.object({ project: projectSchema }).strict();
 
+export const projectMemberSchema = z.object({
+  user_id: uuid,
+  role: z.enum(["owner", "viewer"]),
+  github_login: z.string().min(1).max(100),
+  display_name: z.string().min(1).max(100),
+  avatar_url: z.url().nullable(),
+  joined_at: timestamp,
+}).strict();
+
+export const projectInvitationSchema = z.object({
+  id: uuid,
+  role: z.literal("viewer"),
+  created_at: timestamp,
+  expires_at: timestamp,
+}).strict();
+
+export const projectMembersResponseSchema = z.object({
+  members: z.array(projectMemberSchema).max(100),
+  invitations: z.array(projectInvitationSchema).max(100),
+}).strict();
+
+export const projectInvitationResponseSchema = z.object({
+  invitation: projectInvitationSchema.extend({ url: z.url() }).strict(),
+}).strict();
+
+export type ProjectMember = z.infer<typeof projectMemberSchema>;
+export type ProjectInvitation = z.infer<typeof projectInvitationSchema>;
+export type ProjectMembersResponse = z.infer<typeof projectMembersResponseSchema>;
+export type ProjectInvitationResponse = z.infer<typeof projectInvitationResponseSchema>;
+
 export const overviewResponseSchema = z.object({
   overview: z.object({
     project: projectSchema,
