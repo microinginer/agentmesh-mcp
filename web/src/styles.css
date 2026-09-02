@@ -358,6 +358,23 @@ p { margin: 0; }
 .settings-section h2 { font-size: 1rem; font-weight: 650; }
 .settings-section p { color: var(--muted-foreground); font-size: 0.86rem; line-height: 1.55; }
 .settings-section--danger h2 { color: var(--destructive); }
+.members-section { display: flex; flex-direction: column; gap: 1rem; padding: 1.5rem 0; border-top: 1px solid var(--border); }
+.members-section__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 2rem; }
+.members-section__heading > div { display: flex; max-width: 44rem; flex-direction: column; gap: 0.35rem; }
+.members-section h2 { font-size: 1rem; font-weight: 650; }
+.members-section h3 { font-size: 0.88rem; font-weight: 650; }
+.members-section p { color: var(--muted-foreground); font-size: 0.86rem; line-height: 1.55; }
+.invitation-link { display: flex; flex-direction: column; gap: 0.5rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius); background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.invitation-link__controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; }
+.member-list, .pending-invitations { display: flex; flex-direction: column; gap: 0.5rem; }
+.member-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 0.75rem; min-height: 3.5rem; padding: 0.5rem 0; }
+.member-row + .member-row { border-top: 1px solid var(--border); }
+.member-row__identity { display: flex; min-width: 0; flex-direction: column; gap: 0.1rem; }
+.member-row__identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9rem; }
+.member-row__identity span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); font-size: 0.8rem; }
+.member-list__empty { padding-left: 2.75rem; }
+.pending-invitation__icon { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); }
+.pending-invitation__icon svg { width: 1rem; height: 1rem; }
 .confirmation-field { display: flex; flex-direction: column; gap: 0.55rem; }
 .connections-list { overflow: hidden; border: 1px solid var(--border); border-radius: 0.75rem; }
 .connections-list__header, .connection-row { display: grid; grid-template-columns: minmax(12rem, 1.5fr) minmax(7rem, 0.7fr) minmax(7rem, 0.85fr) minmax(7rem, 0.85fr) minmax(8rem, 1fr) minmax(5rem, 0.5fr); align-items: center; gap: 1rem; padding: 0.85rem 1.2rem; }
@@ -459,7 +476,8 @@ p { margin: 0; }
   .data-row--agent, .data-row--message, .data-row--event { grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.55rem 0.75rem; padding: 0.9rem 0; }
   .data-row--agent .capability-list, .data-row--message p, .data-row--event > div:nth-of-type(2) { grid-column: 2 / -1; }
   .data-row--agent > div:last-child, .data-row--message .message-state, .data-row--event time { grid-column: 2 / -1; }
-  .settings-section { flex-direction: column; align-items: flex-start; }
+  .settings-section, .members-section__heading { flex-direction: column; align-items: flex-start; }
+  .invitation-link__controls { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
