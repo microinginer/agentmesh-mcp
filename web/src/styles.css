@@ -375,6 +375,8 @@ p { margin: 0; }
 .member-list__empty { padding-left: 2.75rem; }
 .pending-invitation__icon { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); }
 .pending-invitation__icon svg { width: 1rem; height: 1rem; }
+.invitation-state-icon { width: 2rem; height: 2rem; color: var(--muted-foreground); }
+.invitation-state-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.75rem; }
 .confirmation-field { display: flex; flex-direction: column; gap: 0.55rem; }
 .connections-list { overflow: hidden; border: 1px solid var(--border); border-radius: 0.75rem; }
 .connections-list__header, .connection-row { display: grid; grid-template-columns: minmax(12rem, 1.5fr) minmax(7rem, 0.7fr) minmax(7rem, 0.85fr) minmax(7rem, 0.85fr) minmax(8rem, 1fr) minmax(5rem, 0.5fr); align-items: center; gap: 1rem; padding: 0.85rem 1.2rem; }

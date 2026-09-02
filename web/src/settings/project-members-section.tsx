@@ -64,7 +64,7 @@ export function ProjectMembersSection({ projectId }: { projectId: string }) {
     try {
       const response = await api.mutate(
         `/api/v1/projects/${projectId}/invitations`,
-        { method: "POST", body: {} },
+        { method: "POST" },
         projectInvitationResponseSchema,
       );
       if (response !== undefined) {

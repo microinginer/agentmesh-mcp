@@ -24,6 +24,7 @@ const fakeCode = "agentmesh-browser-e2e-code";
 const fakeAccessToken = "agentmesh-browser-e2e-provider-token";
 type OAuthMode = "success" | "denial" | "exchange-failure";
 let oauthMode: OAuthMode = "success";
+let oauthProfile: "owner" | "viewer" = "owner";
 
 function webConfig(): WebAuthConfig {
   const config = {
@@ -60,10 +61,15 @@ const githubClient: GitHubOAuthClient = {
   },
   fetchProfile: async (accessToken) => {
     if (accessToken !== fakeAccessToken) throw new Error("Invalid browser OAuth token");
-    return {
+    return oauthProfile === "owner" ? {
       id: "4242",
       login: "agentmesh-e2e-owner",
       name: "AgentMesh E2E Owner",
+      avatarUrl: null,
+    } : {
+      id: "4343",
+      login: "agentmesh-e2e-viewer",
+      name: "AgentMesh E2E Viewer",
       avatarUrl: null,
     };
   },
@@ -81,6 +87,8 @@ const app = buildHttpApp({
   allowedHosts: ["127.0.0.1", "localhost"],
   rateLimits: {
     oauthStart: 10_000,
+    inviteCapture: 10_000,
+    inviteRedeem: 10_000,
     ownerRead: 10_000,
     ownerMutation: 10_000,
     connectionCreate: 10_000,
@@ -136,6 +144,7 @@ function bodyRecord(value: unknown): Record<string, unknown> | null {
 
 app.post("/e2e/reset", async (_request, reply) => {
   oauthMode = "success";
+  oauthProfile = "owner";
   await resetDatabase(database.pool);
   return reply.code(204).send();
 });
@@ -164,6 +173,10 @@ app.post("/e2e/control", async (request, reply) => {
     || body?.mode === "exchange-failure"
   )) {
     oauthMode = body.mode;
+    return reply.code(204).send();
+  }
+  if (action === "oauth-profile" && (body?.profile === "owner" || body?.profile === "viewer")) {
+    oauthProfile = body.profile;
     return reply.code(204).send();
   }
   return reply.code(400).send();
