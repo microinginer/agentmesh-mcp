@@ -228,6 +228,30 @@ describe("hosted control-plane schema", () => {
     });
   });
 
+  it("exposes the complete project invitation lifecycle schema", async () => {
+    const columns = await database.pool.query<{ column_name: string; is_nullable: "YES" | "NO" }>(
+      `SELECT column_name, is_nullable
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'project_invitations'
+        ORDER BY ordinal_position`,
+    );
+
+    expect(columns.rows).toEqual([
+      { column_name: "id", is_nullable: "NO" },
+      { column_name: "project_id", is_nullable: "NO" },
+      { column_name: "role", is_nullable: "NO" },
+      { column_name: "token_digest", is_nullable: "NO" },
+      { column_name: "created_by", is_nullable: "NO" },
+      { column_name: "expires_at", is_nullable: "NO" },
+      { column_name: "redeemed_by", is_nullable: "YES" },
+      { column_name: "redeemed_at", is_nullable: "YES" },
+      { column_name: "revoked_at", is_nullable: "YES" },
+      { column_name: "created_at", is_nullable: "NO" },
+      { column_name: "updated_at", is_nullable: "NO" },
+    ]);
+  });
+
   it("persists only allowlisted audit metadata without a project row", async () => {
     const service = createAuditService({
       db: database.db,

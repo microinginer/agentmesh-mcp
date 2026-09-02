@@ -39,7 +39,7 @@ describe("PostgreSQL tenant invariants", () => {
       `SELECT table_name
          FROM information_schema.tables
         WHERE table_schema = 'public'
-          AND table_name IN ('users', 'oauth_identities', 'web_sessions', 'audit_events', 'projects', 'project_tokens', 'agents', 'messages', 'activity_events', 'agent_progress_reports')
+          AND table_name IN ('users', 'oauth_identities', 'web_sessions', 'audit_events', 'projects', 'project_tokens', 'project_invitations', 'agents', 'messages', 'activity_events', 'agent_progress_reports')
         ORDER BY table_name`,
     );
 
@@ -50,11 +50,78 @@ describe("PostgreSQL tenant invariants", () => {
       "audit_events",
       "messages",
       "oauth_identities",
+      "project_invitations",
       "project_tokens",
       "projects",
       "users",
       "web_sessions",
     ]);
+  });
+
+  it("enforces digest-only single-use viewer invitation state", async () => {
+    const ownerId = randomUUID();
+    const viewerId = randomUUID();
+    const projectId = randomUUID();
+    await database.pool.query(
+      "INSERT INTO users (id, display_name) VALUES ($1, $2), ($3, $4)",
+      [ownerId, "Invitation owner", viewerId, "Invitation viewer"],
+    );
+    await database.pool.query(
+      "INSERT INTO projects (id, owner_user_id, name) VALUES ($1, $2, $3)",
+      [projectId, ownerId, "invited"],
+    );
+
+    await database.pool.query(
+      `INSERT INTO project_invitations
+        (project_id, role, token_digest, created_by, expires_at)
+       VALUES ($1, 'viewer', $2, $3, $4)`,
+      [projectId, Buffer.alloc(32, 1), ownerId, new Date("2026-09-09T00:00:00.000Z")],
+    );
+
+    await expect(database.pool.query(
+      `INSERT INTO project_invitations
+        (project_id, role, token_digest, created_by, expires_at)
+       VALUES ($1, 'owner', $2, $3, $4)`,
+      [projectId, Buffer.alloc(32, 2), ownerId, new Date("2026-09-09T00:00:00.000Z")],
+    )).rejects.toMatchObject({ constraint: "project_invitations_role_check" });
+    await expect(database.pool.query(
+      `INSERT INTO project_invitations
+        (project_id, role, token_digest, created_by, expires_at)
+       VALUES ($1, 'viewer', $2, $3, $4)`,
+      [projectId, Buffer.alloc(31, 3), ownerId, new Date("2026-09-09T00:00:00.000Z")],
+    )).rejects.toMatchObject({ constraint: "project_invitations_digest_length_check" });
+    await expect(database.pool.query(
+      `INSERT INTO project_invitations
+        (project_id, role, token_digest, created_by, expires_at, redeemed_by)
+       VALUES ($1, 'viewer', $2, $3, $4, $5)`,
+      [projectId, Buffer.alloc(32, 4), ownerId, new Date("2026-09-09T00:00:00.000Z"), viewerId],
+    )).rejects.toMatchObject({ constraint: "project_invitations_redemption_pair_check" });
+    await expect(database.pool.query(
+      `INSERT INTO project_invitations
+        (project_id, role, token_digest, created_by, expires_at, redeemed_by, redeemed_at, revoked_at)
+       VALUES ($1, 'viewer', $2, $3, $4, $5, $6, $7)`,
+      [
+        projectId,
+        Buffer.alloc(32, 5),
+        ownerId,
+        new Date("2026-09-09T00:00:00.000Z"),
+        viewerId,
+        new Date("2026-09-02T00:00:00.000Z"),
+        new Date("2026-09-02T00:01:00.000Z"),
+      ],
+    )).rejects.toMatchObject({ constraint: "project_invitations_terminal_state_check" });
+    await expect(database.pool.query(
+      `INSERT INTO project_invitations
+        (project_id, role, token_digest, created_by, expires_at)
+       VALUES ($1, 'viewer', $2, $3, $4)`,
+      [projectId, Buffer.alloc(32, 1), ownerId, new Date("2026-09-09T00:00:00.000Z")],
+    )).rejects.toMatchObject({ constraint: "project_invitations_token_digest_unique" });
+
+    await database.pool.query("DELETE FROM projects WHERE id = $1", [projectId]);
+    const remaining = await database.pool.query<{ total: string }>(
+      "SELECT count(*) AS total FROM project_invitations",
+    );
+    expect(remaining.rows).toEqual([{ total: "0" }]);
   });
 
   it("enforces project membership roles and one membership per user and project", async () => {
