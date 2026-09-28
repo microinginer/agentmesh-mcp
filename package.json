@@ -41,13 +41,13 @@
     "zod": "4.5.4"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "2.0.0",
-    "@types/node": "26.4.0",
+    "@modelcontextprotocol/client": "2.1.0",
+    "@types/node": "26.6.2",
     "@types/pg": "8.23.1",
-    "drizzle-kit": "0.31.10",
-    "oxlint": "1.80.0",
-    "tsx": "4.23.13",
+    "drizzle-kit": "0.31.11",
+    "oxlint": "1.85.0",
+    "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vitest": "4.1.11"
+    "vitest": "5.0.2"
   }
 }
